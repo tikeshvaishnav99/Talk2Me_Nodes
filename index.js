@@ -27,7 +27,7 @@ app.post('/find-match', (req, res) => {
     // Remove user if already in queue to prevent duplicate entries
     waitingQueue = waitingQueue.filter(user => user.userId !== userId);
 
-    // 2. Scan the waiting queue to find a valid partner based on BOTH gender and language rules
+    // 2. Scan the waiting queue to find a valid partner based on BOTH gender and strict language rules
     let matchIndex = -1;
 
     for (let i = 0; i < waitingQueue.length; i++) {
@@ -43,11 +43,19 @@ app.post('/find-match', (req, res) => {
         const theyWantGender = (qTargetGender === "any" || qTargetGender === userGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
-        // Check Language Compatibility
-        // (Either both want "any", or one matches the other's specific language target)
-        const languageWantsThem = (userTargetLanguage === "any" || userTargetLanguage === qLanguage || qLanguage === "any");
-        const theyWantLanguage = (qTargetLanguage === "any" || qTargetLanguage === userLanguage || userLanguage === "any");
-        const isLanguageCompatible = languageWantsThem && theyWantLanguage;
+        // Strict Language Compatibility Check
+        let isLanguageCompatible = false;
+
+        if (userTargetLanguage === "any" && qTargetLanguage === "any") {
+            isLanguageCompatible = true; // Both don't care about language filters
+        } else if (userTargetLanguage === "any") {
+            isLanguageCompatible = (qTargetLanguage === userLanguage); // User doesn't mind, but queued user explicitly wants user's language
+        } else if (qTargetLanguage === "any") {
+            isLanguageCompatible = (userTargetLanguage === qLanguage); // Queued user doesn't mind, but user explicitly wants queued user's language
+        } else {
+            // Both selected specific language filters, ensure they match each other
+            isLanguageCompatible = (userTargetLanguage === qLanguage && qTargetLanguage === userLanguage);
+        }
 
         if (isGenderCompatible && isLanguageCompatible) {
             matchIndex = i;
@@ -81,7 +89,7 @@ app.post('/find-match', (req, res) => {
         timestamp: Date.now() 
     });
     
-    console.log(`[Queue] User ${userId} (G:${userGender}, L:${userLanguage}) waiting. Total in queue: ${waitingQueue.length}`);
+    console.log(`[Queue] User ${userId} (G:${userGender}, L:${userLanguage}, TargetL:${userTargetLanguage}) waiting. Total in queue: ${waitingQueue.length}`);
 
     return res.json({ status: "waiting" });
 });
