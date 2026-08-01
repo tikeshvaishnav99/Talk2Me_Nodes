@@ -18,6 +18,7 @@ app.post('/find-match', (req, res) => {
     const userLanguage = (language || "any").toLowerCase();
     const userTargetLanguage = (targetLanguage || "any").toLowerCase();
 
+    // CRITICAL: Completely strip this user out of the queue first so they never duplicate or ghost
     waitingQueue = waitingQueue.filter(user => user.userId !== userId);
 
     let matchIndex = -1;
@@ -25,15 +26,20 @@ app.post('/find-match', (req, res) => {
     for (let i = 0; i < waitingQueue.length; i++) {
         const queuedUser = waitingQueue[i];
         
+        // Prevent matching a user with themselves if a ghost entry lingered
+        if (queuedUser.userId === userId) continue;
+
         const qGender = (queuedUser.gender || "any").toLowerCase();
         const qTargetGender = (queuedUser.targetGender || "any").toLowerCase();
         const qLanguage = (queuedUser.language || "any").toLowerCase();
         const qTargetLanguage = (queuedUser.targetLanguage || "any").toLowerCase();
 
+        // Gender Compatibility Check
         const genderWantsThem = (userTargetGender === "any" || userTargetGender === qGender);
         const theyWantGender = (qTargetGender === "any" || qTargetGender === userGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
+        // Language Compatibility Check
         let isLanguageCompatible = false;
         if (userTargetLanguage === "any" && qTargetLanguage === "any") {
             isLanguageCompatible = true; 
@@ -55,15 +61,16 @@ app.post('/find-match', (req, res) => {
         const partner = waitingQueue.splice(matchIndex, 1)[0];
         const roomId = `Room_${Math.floor(10000 + Math.random() * 90000)}`;
 
-        console.log(`[Matched] ${userId} <-> ${partner.userId} in ${roomId}`);
+        console.log(`[Matched] ${userId} (${userGender}) <-> ${partner.userId} (${partner.gender}) in ${roomId}`);
 
-        // Save mutual history
+        // Save mutual history for Reconnect
         lastCallPairs.set(userId, partner.userId);
         lastCallPairs.set(partner.userId, userId);
 
         return res.json({ status: "matched", roomId: roomId });
     }
 
+    // Add to queue if no match found
     waitingQueue.push({ 
         userId, 
         gender: userGender, 
@@ -73,10 +80,21 @@ app.post('/find-match', (req, res) => {
         timestamp: Date.now() 
     });
 
+    console.log(`[Queue] User ${userId} waiting. Total in queue: ${waitingQueue.length}`);
     return res.json({ status: "waiting" });
 });
 
-// 2. RECONNECT ENDPOINT (Direct, mutual pairing)
+// 2. CANCEL MATCHMAKING (Ensures user is completely purged from queue)
+app.post('/cancel-match', (req, res) => {
+    const { userId } = req.body;
+    if (userId) {
+        waitingQueue = waitingQueue.filter(user => user.userId !== userId);
+        console.log(`[Cancelled] User ${userId} removed from queue.`);
+    }
+    return res.json({ status: "cancelled" });
+});
+
+// 3. RECONNECT ENDPOINT
 app.post('/reconnect', (req, res) => {
     const { userId } = req.body;
 
@@ -91,7 +109,7 @@ app.post('/reconnect', (req, res) => {
         return res.status(400).json({ status: "error", message: "No previous partner found." });
     }
 
-    // Remove both from queue
+    // Remove both from queue so they don't accidentally match with strangers
     waitingQueue = waitingQueue.filter(user => user.userId !== userId && user.userId !== previousPartnerId);
 
     const roomId = `Room_Re_${Math.floor(10000 + Math.random() * 90000)}`;
@@ -99,12 +117,6 @@ app.post('/reconnect', (req, res) => {
     console.log(`[Reconnect Success] User ${userId} reconnected with ${previousPartnerId} in ${roomId}`);
 
     return res.json({ status: "matched", roomId: roomId, partnerId: previousPartnerId });
-});
-
-app.post('/cancel-match', (req, res) => {
-    const { userId } = req.body;
-    waitingQueue = waitingQueue.filter(user => user.userId !== userId);
-    return res.json({ status: "cancelled" });
 });
 
 const PORT = process.env.PORT || 3000;
