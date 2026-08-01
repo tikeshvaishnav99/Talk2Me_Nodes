@@ -4,6 +4,7 @@ app.use(express.json());
 
 let waitingQueue = [];
 let activeMatches = {}; // Store room IDs for waiting users who got matched
+let lastCallPairs = new Map(); // Key: userId, Value: previousPartnerUserId
 
 app.post('/find-match', (req, res) => {
     const { userId, gender, targetGender, language, targetLanguage } = req.body;
@@ -70,6 +71,10 @@ app.post('/find-match', (req, res) => {
 
         console.log(`[Matched] ${userId} (${userGender}/${userLanguage}) <-> ${partner.userId} (${partner.gender}/${partner.language}) in ${roomId}`);
 
+        // Save the last call pair for both users
+        lastCallPairs.set(userId, partner.userId);
+        lastCallPairs.set(partner.userId, userId);
+
         // Save the room ID for the partner so their next poll picks it up
         activeMatches[partner.userId] = roomId;
 
@@ -92,6 +97,33 @@ app.post('/find-match', (req, res) => {
     console.log(`[Queue] User ${userId} (G:${userGender}, L:${userLanguage}, TargetL:${userTargetLanguage}) waiting. Total in queue: ${waitingQueue.length}`);
 
     return res.json({ status: "waiting" });
+});
+
+app.post('/reconnect', (req, res) => {
+    const { userId } = req.body;
+
+    if (!userId) {
+        return res.status(400).json({ error: "userId is required" });
+    }
+
+    const previousPartnerId = lastCallPairs.get(userId);
+
+    if (!previousPartnerId) {
+        return res.status(400).json({ status: "error", message: "No previous partner found." });
+    }
+
+    // Generate a new room for the reconnection
+    const roomId = `Room_Re_${Math.floor(10000 + Math.random() * 90000)}`;
+
+    // Set active match for the previous partner so their next poll/request picks it up
+    activeMatches[previousPartnerId] = roomId;
+
+    console.log(`[Reconnect] User ${userId} reconnected with ${previousPartnerId} in ${roomId}`);
+
+    return res.json({
+        status: "matched",
+        roomId: roomId
+    });
 });
 
 app.post('/cancel-match', (req, res) => {
