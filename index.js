@@ -14,7 +14,7 @@ app.post('/find-match', (req, res) => {
         return res.status(400).json({ error: "userId is required" });
     }
 
-    // If this user is already part of an active match, immediately return the room so they catch up!
+    // If this user is already part of an active match (or reconnect), return it immediately!
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
         return res.json({ status: "matched", roomId: matchInfo.roomId });
@@ -67,7 +67,7 @@ app.post('/find-match', (req, res) => {
 
         console.log(`[Matched] ${userId} (${userGender}) <-> ${partner.userId} (${partner.gender}) in ${roomId}`);
 
-        // Save active match state for BOTH users so whoever polls next gets it
+        // Save active match state for BOTH users
         activeMatches.set(userId, { roomId, partnerId: partner.userId });
         activeMatches.set(partner.userId, { roomId, partnerId: userId });
 
@@ -102,12 +102,19 @@ app.post('/cancel-match', (req, res) => {
     return res.json({ status: "cancelled" });
 });
 
-// 3. RECONNECT ENDPOINT
+// 3. RECONNECT ENDPOINT (Fully Synchronized for Both Devices)
 app.post('/reconnect', (req, res) => {
     const { userId } = req.body;
 
     if (!userId) {
         return res.status(400).json({ error: "userId is required" });
+    }
+
+    // CRITICAL: If a reconnect room was already created for this pair by the other device pressing it first, 
+    // immediately return that exact same room so they sync up perfectly!
+    if (activeMatches.has(userId)) {
+        const matchInfo = activeMatches.get(userId);
+        return res.json({ status: "matched", roomId: matchInfo.roomId, partnerId: matchInfo.partnerId });
     }
 
     const previousPartnerId = lastCallPairs.get(userId);
@@ -121,7 +128,7 @@ app.post('/reconnect', (req, res) => {
 
     const roomId = `Room_Re_${Math.floor(10000 + Math.random() * 90000)}`;
 
-    // Set active match for both so they instantly sync up on next poll or direct return
+    // Lock the EXACT same reconnect room for BOTH partners instantly
     activeMatches.set(userId, { roomId, partnerId: previousPartnerId });
     activeMatches.set(previousPartnerId, { roomId, partnerId: userId });
 
