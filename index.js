@@ -109,16 +109,18 @@ app.post('/reconnect', (req, res) => {
     const previousPartnerId = lastCallPairs.get(userId);
 
     if (!previousPartnerId) {
+        console.log(`[Reconnect Failed] No previous partner found for user: ${userId}`);
         return res.status(400).json({ status: "error", message: "No previous partner found." });
     }
 
     // Generate a new room for the reconnection
     const roomId = `Room_Re_${Math.floor(10000 + Math.random() * 90000)}`;
 
-    // Set active match for the previous partner so their next poll/request picks it up
+    // Set active match for BOTH users so whoever polls or requests picks it up instantly
     activeMatches[previousPartnerId] = roomId;
+    activeMatches[userId] = roomId;
 
-    console.log(`[Reconnect] User ${userId} reconnected with ${previousPartnerId} in ${roomId}`);
+    console.log(`[Reconnect Success] User ${userId} reconnected with ${previousPartnerId} in ${roomId}`);
 
     return res.json({
         status: "matched",
