@@ -14,7 +14,6 @@ app.post('/find-match', (req, res) => {
         return res.status(400).json({ error: "userId is required" });
     }
 
-    // If this user is already part of an active match (or reconnect), return it immediately!
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
         return res.json({ status: "matched", roomId: matchInfo.roomId });
@@ -25,7 +24,6 @@ app.post('/find-match', (req, res) => {
     const userLanguage = (language || "any").toLowerCase();
     const userTargetLanguage = (targetLanguage || "any").toLowerCase();
 
-    // Clean user from queue first
     waitingQueue = waitingQueue.filter(user => user.userId !== userId);
 
     let matchIndex = -1;
@@ -67,18 +65,15 @@ app.post('/find-match', (req, res) => {
 
         console.log(`[Matched] ${userId} (${userGender}) <-> ${partner.userId} (${partner.gender}) in ${roomId}`);
 
-        // Save active match state for BOTH users
         activeMatches.set(userId, { roomId, partnerId: partner.userId });
         activeMatches.set(partner.userId, { roomId, partnerId: userId });
 
-        // Save mutual history for Reconnect
         lastCallPairs.set(userId, partner.userId);
         lastCallPairs.set(partner.userId, userId);
 
         return res.json({ status: "matched", roomId: roomId });
     }
 
-    // Add to queue if no match found
     waitingQueue.push({ 
         userId, 
         gender: userGender, 
@@ -96,13 +91,13 @@ app.post('/cancel-match', (req, res) => {
     const { userId } = req.body;
     if (userId) {
         waitingQueue = waitingQueue.filter(user => user.userId !== userId);
-        activeMatches.delete(userId); // Clear active match state on cancel
+        activeMatches.delete(userId);
         console.log(`[Cancelled] User ${userId} removed from queue/matches.`);
     }
     return res.json({ status: "cancelled" });
 });
 
-// 3. RECONNECT ENDPOINT (Fully Synchronized for Both Devices)
+// 3. RECONNECT ENDPOINT (Bulletproof Synchronization)
 app.post('/reconnect', (req, res) => {
     const { userId } = req.body;
 
@@ -110,8 +105,7 @@ app.post('/reconnect', (req, res) => {
         return res.status(400).json({ error: "userId is required" });
     }
 
-    // CRITICAL: If a reconnect room was already created for this pair by the other device pressing it first, 
-    // immediately return that exact same room so they sync up perfectly!
+    // If an active match / reconnect room already exists for this user, return it immediately
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
         return res.json({ status: "matched", roomId: matchInfo.roomId, partnerId: matchInfo.partnerId });
@@ -124,15 +118,24 @@ app.post('/reconnect', (req, res) => {
         return res.status(400).json({ status: "error", message: "No previous partner found." });
     }
 
+    // Check if the partner ALREADY generated a reconnect room first!
+    if (activeMatches.has(previousPartnerId)) {
+        const existingMatch = activeMatches.get(previousPartnerId);
+        // Bind the current user to that exact same room
+        activeMatches.set(userId, { roomId: existingMatch.roomId, partnerId: previousPartnerId });
+        console.log(`[Reconnect Sync] User ${userId} joined existing room ${existingMatch.roomId} with ${previousPartnerId}`);
+        return res.json({ status: "matched", roomId: existingMatch.roomId, partnerId: previousPartnerId });
+    }
+
     waitingQueue = waitingQueue.filter(user => user.userId !== userId && user.userId !== previousPartnerId);
 
+    // Otherwise, generate the new shared room right now for BOTH users
     const roomId = `Room_Re_${Math.floor(10000 + Math.random() * 90000)}`;
 
-    // Lock the EXACT same reconnect room for BOTH partners instantly
     activeMatches.set(userId, { roomId, partnerId: previousPartnerId });
     activeMatches.set(previousPartnerId, { roomId, partnerId: userId });
 
-    console.log(`[Reconnect Success] User ${userId} reconnected with ${previousPartnerId} in ${roomId}`);
+    console.log(`[Reconnect Success] User ${userId} created reconnect room with ${previousPartnerId}: ${roomId}`);
 
     return res.json({ status: "matched", roomId: roomId, partnerId: previousPartnerId });
 });
