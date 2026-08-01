@@ -3,9 +3,10 @@ const app = express();
 app.use(express.json());
 
 let waitingQueue = [];
-let activeMatches = {}; // Store room IDs for waiting users who got matched
-let lastCallPairs = new Map(); // Key: userId, Value: previousPartnerUserId
+let activeMatches = {}; 
+let lastCallPairs = new Map(); 
 
+// 1. REGULAR MATCHMAKING
 app.post('/find-match', (req, res) => {
     const { userId, gender, targetGender, language, targetLanguage } = req.body;
 
@@ -18,17 +19,12 @@ app.post('/find-match', (req, res) => {
     const userLanguage = (language || "any").toLowerCase();
     const userTargetLanguage = (targetLanguage || "any").toLowerCase();
 
-    // 1. If this user was already matched, return their assigned room immediately
-    if (activeMatches[userId]) {
-        const roomId = activeMatches[userId];
-        delete activeMatches[userId];
-        return res.json({ status: "matched", roomId: roomId });
-    }
+    // Clear any pending active match to prevent ghost overlaps
+    delete activeMatches[userId];
 
-    // Remove user if already in queue to prevent duplicate entries
+    // Remove user if already in queue
     waitingQueue = waitingQueue.filter(user => user.userId !== userId);
 
-    // 2. Scan the waiting queue to find a valid partner based on BOTH gender and strict language rules
     let matchIndex = -1;
 
     for (let i = 0; i < waitingQueue.length; i++) {
@@ -39,14 +35,11 @@ app.post('/find-match', (req, res) => {
         const qLanguage = (queuedUser.language || "any").toLowerCase();
         const qTargetLanguage = (queuedUser.targetLanguage || "any").toLowerCase();
 
-        // Check Gender Compatibility
         const genderWantsThem = (userTargetGender === "any" || userTargetGender === qGender);
         const theyWantGender = (qTargetGender === "any" || qTargetGender === userGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
-        // Strict Language Compatibility Check
         let isLanguageCompatible = false;
-
         if (userTargetLanguage === "any" && qTargetLanguage === "any") {
             isLanguageCompatible = true; 
         } else if (userTargetLanguage === "any") {
@@ -63,27 +56,20 @@ app.post('/find-match', (req, res) => {
         }
     }
 
-    // 3. If a compatible partner is found, pair them up
     if (matchIndex !== -1) {
         const partner = waitingQueue.splice(matchIndex, 1)[0];
         const roomId = `Room_${Math.floor(10000 + Math.random() * 90000)}`;
 
-        console.log(`[Matched] ${userId} (${userGender}/${userLanguage}) <-> ${partner.userId} (${partner.gender}/${partner.language}) in ${roomId}`);
+        console.log(`[Matched] ${userId} <-> ${partner.userId} in ${roomId}`);
 
-        // Save the last call pair for both users
         lastCallPairs.set(userId, partner.userId);
         lastCallPairs.set(partner.userId, userId);
 
-        // Save the room ID for the partner so their next poll picks it up
-        activeMatches[partner.userId] = roomId;
+        delete activeMatches[partner.userId];
 
-        return res.json({
-            status: "matched",
-            roomId: roomId
-        });
+        return res.json({ status: "matched", roomId: roomId });
     }
 
-    // 4. Otherwise, add this player to the waiting queue
     waitingQueue.push({ 
         userId, 
         gender: userGender, 
@@ -92,12 +78,11 @@ app.post('/find-match', (req, res) => {
         targetLanguage: userTargetLanguage, 
         timestamp: Date.now() 
     });
-    
-    console.log(`[Queue] User ${userId} (G:${userGender}, L:${userLanguage}, TargetL:${userTargetLanguage}) waiting. Total in queue: ${waitingQueue.length}`);
 
     return res.json({ status: "waiting" });
 });
 
+// 2. RECONNECT ENDPOINT
 app.post('/reconnect', (req, res) => {
     const { userId } = req.body;
 
@@ -112,22 +97,20 @@ app.post('/reconnect', (req, res) => {
         return res.status(400).json({ status: "error", message: "No previous partner found." });
     }
 
-    // Generate a unique room for this reconnection session
+    // CRITICAL: Remove both users from the waiting queue so they don't get matched into random rooms!
+    waitingQueue = waitingQueue.filter(user => user.userId !== userId && user.userId !== previousPartnerId);
+
     const roomId = `Room_Re_${Math.floor(10000 + Math.random() * 90000)}`;
 
-    // Explicitly assign the active match room to BOTH users
     activeMatches[userId] = roomId;
     activeMatches[previousPartnerId] = roomId;
 
     console.log(`[Reconnect Success] User ${userId} reconnected with ${previousPartnerId} in ${roomId}`);
 
-    return res.json({
-        status: "matched",
-        roomId: roomId
-    });
+    return res.json({ status: "matched", roomId: roomId });
 });
 
-// NEW: Dedicated lightweight endpoint for checking pending active matches without joining the search queue
+// 3. CHECK-MATCH ENDPOINT
 app.post('/check-match', (req, res) => {
     const { userId } = req.body;
 
@@ -137,8 +120,12 @@ app.post('/check-match', (req, res) => {
 
     if (activeMatches[userId]) {
         const roomId = activeMatches[userId];
-        delete activeMatches[userId]; // Clear it so it only fires once per match
-        console.log(`[Check-Match] User ${userId} retrieved active room: ${roomId}`);
+        delete activeMatches[userId]; 
+        
+        // Also remove them from waiting queue just in case they were left lingering
+        waitingQueue = waitingQueue.filter(user => user.userId !== userId);
+
+        console.log(`[Check-Match] User ${userId} retrieved reconnection room: ${roomId}`);
         return res.json({ status: "matched", roomId: roomId });
     }
 
