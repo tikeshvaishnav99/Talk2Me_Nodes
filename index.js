@@ -45,7 +45,7 @@ app.post('/find-match', (req, res) => {
         const theyWantGender = (qTargetGender === "any" || qTargetGender === userGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
-        // FIXED: Robust bidirectional language compatibility check
+        // Robust bidirectional language compatibility check
         let isLanguageCompatible = false;
         if (userTargetLanguage === "any" && qTargetLanguage === "any") {
             isLanguageCompatible = true;
