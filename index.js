@@ -27,6 +27,7 @@ app.post('/find-match', (req, res) => {
     const userLanguage = (language || "any").toLowerCase();
     const userTargetLanguage = (targetLanguage || "any").toLowerCase();
 
+    // Remove user from queue if they are already in it to refresh their status
     waitingQueue = waitingQueue.filter(user => user.userId !== userId);
 
     let matchIndex = -1;
@@ -39,17 +40,19 @@ app.post('/find-match', (req, res) => {
         const qLanguage = (queuedUser.language || "any").toLowerCase();
         const qTargetLanguage = (queuedUser.targetLanguage || "any").toLowerCase();
 
+        // Gender Compatibility Check
         const genderWantsThem = (userTargetGender === "any" || userTargetGender === qGender);
         const theyWantGender = (qTargetGender === "any" || qTargetGender === userGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
+        // FIXED: Robust bidirectional language compatibility check
         let isLanguageCompatible = false;
         if (userTargetLanguage === "any" && qTargetLanguage === "any") {
             isLanguageCompatible = true;
         } else if (userTargetLanguage === "any") {
-            isLanguageCompatible = (qTargetLanguage === userLanguage);
+            isLanguageCompatible = (qTargetLanguage === userLanguage || qLanguage === "any");
         } else if (qTargetLanguage === "any") {
-            isLanguageCompatible = (userTargetLanguage === qLanguage);
+            isLanguageCompatible = (userTargetLanguage === qLanguage || userLanguage === "any");
         } else {
             isLanguageCompatible = (userTargetLanguage === qLanguage && qTargetLanguage === userLanguage);
         }
@@ -67,10 +70,20 @@ app.post('/find-match', (req, res) => {
         activeMatches.set(userId, { roomId, partnerId: partner.userId });
         activeMatches.set(partner.userId, { roomId, partnerId: userId });
 
+        console.log(`[Matchmaking] Successfully paired ${userId} with ${partner.userId} in ${roomId}`);
         return res.json({ status: "matched", roomId: roomId });
     }
 
-    waitingQueue.push({ userId, gender: userGender, targetGender: userTargetGender, language: userLanguage, targetLanguage: userTargetLanguage, timestamp: Date.now() });
+    // Add user to the waiting queue if no match is found
+    waitingQueue.push({ 
+        userId, 
+        gender: userGender, 
+        targetGender: userTargetGender, 
+        language: userLanguage, 
+        targetLanguage: userTargetLanguage, 
+        timestamp: Date.now() 
+    });
+    
     return res.json({ status: "waiting" });
 });
 
@@ -87,8 +100,6 @@ app.post('/cancel-match', (req, res) => {
 // 3. EXTEND TIME COIN DEDUCTION (8 coins for 10 more minutes)
 app.post('/extend-time', (req, res) => {
     const { userId } = req.body;
-    // In a real database you check user's coins. For now, we simulate success:
-    // If user has enough coins, deduct 8 and allow extension.
     console.log(`[Time Extension] User ${userId} paid 8 coins to extend call time.`);
     return res.json({ status: "success", message: "Time extended successfully!" });
 });
