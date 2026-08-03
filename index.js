@@ -10,6 +10,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 let waitingQueue = [];
 let activeMatches = new Map(); // userId -> { roomId, partnerId }
+let roomExtensions = {};     // roomId -> { requester, status }
 
 // 1. REGULAR MATCHMAKING (Gender & Language Filters)
 app.post('/find-match', (req, res) => {
@@ -27,7 +28,6 @@ app.post('/find-match', (req, res) => {
     const userLanguage = (language || "any").toLowerCase();
     const userTargetLanguage = (targetLanguage || "any").toLowerCase();
 
-    // Remove user from queue if they are already in it to refresh their status
     waitingQueue = waitingQueue.filter(user => user.userId !== userId);
 
     let matchIndex = -1;
@@ -40,12 +40,10 @@ app.post('/find-match', (req, res) => {
         const qLanguage = (queuedUser.language || "any").toLowerCase();
         const qTargetLanguage = (queuedUser.targetLanguage || "any").toLowerCase();
 
-        // Gender Compatibility Check
         const genderWantsThem = (userTargetGender === "any" || userTargetGender === qGender);
         const theyWantGender = (qTargetGender === "any" || qTargetGender === userGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
-        // Robust bidirectional language compatibility check
         let isLanguageCompatible = false;
         if (userTargetLanguage === "any" && qTargetLanguage === "any") {
             isLanguageCompatible = true;
@@ -74,7 +72,6 @@ app.post('/find-match', (req, res) => {
         return res.json({ status: "matched", roomId: roomId });
     }
 
-    // Add user to the waiting queue if no match is found
     waitingQueue.push({ 
         userId, 
         gender: userGender, 
@@ -92,16 +89,62 @@ app.post('/cancel-match', (req, res) => {
     const { userId } = req.body;
     if (userId) {
         waitingQueue = waitingQueue.filter(user => user.userId !== userId);
+        
+        const matchInfo = activeMatches.get(userId);
+        if (matchInfo) {
+            delete roomExtensions[matchInfo.roomId];
+        }
         activeMatches.delete(userId);
     }
     return res.json({ status: "cancelled" });
 });
 
-// 3. EXTEND TIME COIN DEDUCTION (8 coins for 10 more minutes)
-app.post('/extend-time', (req, res) => {
-    const { userId } = req.body;
-    console.log(`[Time Extension] User ${userId} paid 8 coins to extend call time.`);
-    return res.json({ status: "success", message: "Time extended successfully!" });
+// 3. CALL EXTENSION HANDSHAKE ENDPOINTS
+app.post('/call-extension/request', (req, res) => {
+    const { roomId, userId } = req.body;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
+
+    roomExtensions[roomId] = {
+        requester: userId,
+        status: "requested"
+    };
+
+    console.log(`[Extension] User ${userId} requested an extension for room ${roomId}`);
+    return res.json({ status: "requested" });
+});
+
+app.post('/call-extension/accept', (req, res) => {
+    const { roomId, userId } = req.body;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
+
+    if (roomExtensions[roomId]) {
+        roomExtensions[roomId].status = "accepted";
+    } else {
+        roomExtensions[roomId] = { requester: userId, status: "accepted" };
+    }
+
+    console.log(`[Extension] Extension accepted for room ${roomId} by ${userId}`);
+    return res.json({ status: "accepted" });
+});
+
+app.get('/call-extension/status', (req, res) => {
+    const { roomId, userId } = req.query;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
+
+    const extensionInfo = roomExtensions[roomId];
+    if (!extensionInfo) {
+        return res.json({ status: "none" });
+    }
+
+    if (extensionInfo.status === "requested" && extensionInfo.requester !== userId) {
+        return res.json({ status: "requested" });
+    }
+
+    if (extensionInfo.status === "accepted") {
+        return res.json({ status: "accepted" });
+    }
+
+    return res.json({ status: "none" });
 });
 
 // 4. REAL-TIME AUTO-DELETE CHAT (Socket.io)
