@@ -137,12 +137,12 @@ app.get('/call-extension/status', (req, res) => {
         return res.json({ status: "none" });
     }
 
-    // If accepted, tell BOTH clients extension is accepted so timers reset
+    // If accepted, notify both clients so their timers reset together
     if (extensionInfo.status === "accepted") {
         return res.json({ status: "accepted" });
     }
 
-    // If requested, ONLY trigger the popup for the partner (the one who did NOT request it)
+    // If requested, trigger the extension popup only for the peer who didn't request it
     if (extensionInfo.status === "requested" && extensionInfo.requester !== userId) {
         return res.json({ status: "requested" });
     }
@@ -160,4 +160,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`))[cite: 24];
