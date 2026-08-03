@@ -93,6 +93,7 @@ app.post('/cancel-match', (req, res) => {
         const matchInfo = activeMatches.get(userId);
         if (matchInfo) {
             delete roomExtensions[matchInfo.roomId];
+            activeMatches.delete(matchInfo.partnerId);
         }
         activeMatches.delete(userId);
     }
@@ -136,12 +137,14 @@ app.get('/call-extension/status', (req, res) => {
         return res.json({ status: "none" });
     }
 
-    if (extensionInfo.status === "requested" && extensionInfo.requester !== userId) {
-        return res.json({ status: "requested" });
-    }
-
+    // If accepted, tell BOTH clients extension is accepted so timers reset
     if (extensionInfo.status === "accepted") {
         return res.json({ status: "accepted" });
+    }
+
+    // If requested, ONLY trigger the popup for the partner (the one who did NOT request it)
+    if (extensionInfo.status === "requested" && extensionInfo.requester !== userId) {
+        return res.json({ status: "requested" });
     }
 
     return res.json({ status: "none" });
