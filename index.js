@@ -68,6 +68,9 @@ app.post('/find-match', (req, res) => {
         activeMatches.set(userId, { roomId, partnerId: partner.userId });
         activeMatches.set(partner.userId, { roomId, partnerId: userId });
 
+        // Initialize empty room extension state
+        roomExtensions[roomId] = { requester: null, status: "none" };
+
         console.log(`[Matchmaking] Successfully paired ${userId} with ${partner.userId} in ${roomId}`);
         return res.json({ status: "matched", roomId: roomId });
     }
@@ -84,7 +87,7 @@ app.post('/find-match', (req, res) => {
     return res.json({ status: "waiting" });
 });
 
-// 2. CANCEL MATCHMAKING
+// 2. CANCEL MATCHMAKING & END CALL
 app.post('/cancel-match', (req, res) => {
     const { userId } = req.body;
     if (userId) {
@@ -104,6 +107,13 @@ app.post('/cancel-match', (req, res) => {
 app.post('/call-extension/request', (req, res) => {
     const { roomId, userId } = req.body;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
+
+    // Handle race condition: if partner already requested, treat this request as an automatic acceptance!
+    if (roomExtensions[roomId] && roomExtensions[roomId].status === "requested" && roomExtensions[roomId].requester !== userId) {
+        roomExtensions[roomId].status = "accepted";
+        console.log(`[Extension] Mutual click detected for ${roomId}. Status auto-set to accepted.`);
+        return res.json({ status: "accepted" });
+    }
 
     roomExtensions[roomId] = {
         requester: userId,
@@ -128,6 +138,20 @@ app.post('/call-extension/accept', (req, res) => {
     return res.json({ status: "accepted" });
 });
 
+app.post('/call-extension/decline', (req, res) => {
+    const { roomId, userId } = req.body;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
+
+    if (roomExtensions[roomId]) {
+        roomExtensions[roomId].status = "declined";
+    } else {
+        roomExtensions[roomId] = { requester: userId, status: "declined" };
+    }
+
+    console.log(`[Extension] Extension declined for room ${roomId} by ${userId}`);
+    return res.json({ status: "declined" });
+});
+
 app.get('/call-extension/status', (req, res) => {
     const { roomId, userId } = req.query;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
@@ -140,6 +164,11 @@ app.get('/call-extension/status', (req, res) => {
     // If accepted, notify both clients so their timers reset together
     if (extensionInfo.status === "accepted") {
         return res.json({ status: "accepted" });
+    }
+
+    // If declined, notify partner that extension was rejected
+    if (extensionInfo.status === "declined") {
+        return res.json({ status: "declined" });
     }
 
     // If requested, trigger the extension popup only for the peer who didn't request it
@@ -160,4 +189,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`))[cite: 24];
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
