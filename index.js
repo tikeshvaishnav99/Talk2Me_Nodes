@@ -7,10 +7,10 @@ app.use(express.json());
 const server = http.createServer(app);
 
 let waitingQueue = [];
-let activeMatches = new Map(); // userId -> { roomId, partnerUserId }
-let roomExtensions = new Map(); // roomId -> { requesterId, status }
+let activeMatches = new Map(); 
+let roomExtensions = new Map(); 
 
-app.get('/', (req, res) => res.status(200).send("Talk2Me HTTP Backend Operational"));
+app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Backend Operational"));
 
 // 1. MATCHMAKING
 app.post('/find-match', (req, res) => {
@@ -51,7 +51,7 @@ app.post('/find-match', (req, res) => {
         activeMatches.set(userId, { roomId, partnerUserId: partner.userId });
         activeMatches.set(partner.userId, { roomId, partnerUserId: userId });
 
-        roomExtensions.set(roomId, { requesterId: null, status: "none" });
+        roomExtensions.set(roomId, { requesterId: null, status: "none", consumedBy: new Set() });
 
         return res.json({ status: "matched", roomId });
     }
@@ -60,26 +60,27 @@ app.post('/find-match', (req, res) => {
     return res.json({ status: "waiting" });
 });
 
-// 2. EXTENSION HANDSHAKE
+// 2. EXTENSION HANDSHAKE WITH MULTI-EXTENSION RESET
 app.post('/call-extension/request', (req, res) => {
     const { roomId, userId } = req.body;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
 
     let ext = roomExtensions.get(roomId);
     if (!ext) {
-        ext = { requesterId: userId, status: "requested" };
+        ext = { requesterId: userId, status: "requested", consumedBy: new Set() };
         roomExtensions.set(roomId, ext);
         return res.json({ status: "requested" });
     }
 
-    // Mutual click: if second user requests, automatically accept!
     if (ext.status === "requested" && ext.requesterId !== userId) {
         ext.status = "accepted";
+        ext.consumedBy = new Set();
         return res.json({ status: "accepted" });
     }
 
     ext.requesterId = userId;
     ext.status = "requested";
+    ext.consumedBy = new Set();
     return res.json({ status: "requested" });
 });
 
@@ -88,6 +89,7 @@ app.post('/call-extension/accept', (req, res) => {
     let ext = roomExtensions.get(roomId);
     if (ext) {
         ext.status = "accepted";
+        ext.consumedBy = new Set();
     }
     return res.json({ status: "accepted" });
 });
@@ -107,10 +109,18 @@ app.get('/call-extension/status', (req, res) => {
 
     if (!ext) return res.json({ status: "none" });
 
-    return res.json({ status: ext.status });
+    const currentStatus = ext.status;
+
+    if (currentStatus === "accepted") {
+        ext.consumedBy.add(userId);
+        if (ext.consumedBy.size >= 2) {
+            ext.status = "none"; // Resets state so room can be extended AGAIN later!
+        }
+    }
+
+    return res.json({ status: currentStatus });
 });
 
-// 3. CANCEL / DISCONNECT
 app.post('/cancel-match', (req, res) => {
     const { userId } = req.body;
     if (userId) {
@@ -131,4 +141,4 @@ setInterval(() => {
 }, 30000);
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`[Talk2Me Engine] HTTP Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`[Talk2Me Engine] Server running on port ${PORT}`));
