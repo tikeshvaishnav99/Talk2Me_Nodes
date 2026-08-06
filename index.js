@@ -5,188 +5,172 @@ const { Server } = require('socket.io');
 const app = express();
 app.use(express.json());
 
+// CORS Configuration for Production
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server, {
+    cors: { origin: "*" },
+    pingInterval: 10000,
+    pingTimeout: 5000
+});
 
+// State Store
 let waitingQueue = [];
-let activeMatches = new Map(); // userId -> { roomId, partnerId }
-let roomExtensions = {};     // roomId -> { requester, status }
+let activeMatches = new Map(); // socketId -> { roomId, partnerSocketId, userId, partnerUserId }
+let roomExtensions = new Map(); // roomId -> { requesterId, status: "none" | "requested" | "accepted" | "declined" }
 
-// 1. REGULAR MATCHMAKING (Gender & Language Filters)
-app.post('/find-match', (req, res) => {
-    const { userId, gender, targetGender, language, targetLanguage } = req.body;
-
-    if (!userId) return res.status(400).json({ error: "userId is required" });
-
-    if (activeMatches.has(userId)) {
-        const matchInfo = activeMatches.get(userId);
-        return res.json({ status: "matched", roomId: matchInfo.roomId });
-    }
-
-    const userGender = (gender || "any").toLowerCase();
-    const userTargetGender = (targetGender || "any").toLowerCase();
-    const userLanguage = (language || "any").toLowerCase();
-    const userTargetLanguage = (targetLanguage || "any").toLowerCase();
-
-    waitingQueue = waitingQueue.filter(user => user.userId !== userId);
-
-    let matchIndex = -1;
-    for (let i = 0; i < waitingQueue.length; i++) {
-        const queuedUser = waitingQueue[i];
-        if (queuedUser.userId === userId) continue;
-
-        const qGender = (queuedUser.gender || "any").toLowerCase();
-        const qTargetGender = (queuedUser.targetGender || "any").toLowerCase();
-        const qLanguage = (queuedUser.language || "any").toLowerCase();
-        const qTargetLanguage = (queuedUser.targetLanguage || "any").toLowerCase();
-
-        const genderWantsThem = (userTargetGender === "any" || userTargetGender === qGender);
-        const theyWantGender = (qTargetGender === "any" || qTargetGender === userGender);
-        const isGenderCompatible = genderWantsThem && theyWantGender;
-
-        let isLanguageCompatible = false;
-        if (userTargetLanguage === "any" && qTargetLanguage === "any") {
-            isLanguageCompatible = true;
-        } else if (userTargetLanguage === "any") {
-            isLanguageCompatible = (qTargetLanguage === userLanguage || qLanguage === "any");
-        } else if (qTargetLanguage === "any") {
-            isLanguageCompatible = (userTargetLanguage === qLanguage || userLanguage === "any");
-        } else {
-            isLanguageCompatible = (userTargetLanguage === qLanguage && qTargetLanguage === userLanguage);
-        }
-
-        if (isGenderCompatible && isLanguageCompatible) {
-            matchIndex = i;
-            break;
-        }
-    }
-
-    if (matchIndex !== -1) {
-        const partner = waitingQueue.splice(matchIndex, 1)[0];
-        const roomId = `Room_${Math.floor(10000 + Math.random() * 90000)}`;
-
-        activeMatches.set(userId, { roomId, partnerId: partner.userId });
-        activeMatches.set(partner.userId, { roomId, partnerId: userId });
-
-        // Initialize empty room extension state
-        roomExtensions[roomId] = { requester: null, status: "none" };
-
-        console.log(`[Matchmaking] Successfully paired ${userId} with ${partner.userId} in ${roomId}`);
-        return res.json({ status: "matched", roomId: roomId });
-    }
-
-    waitingQueue.push({ 
-        userId, 
-        gender: userGender, 
-        targetGender: userTargetGender, 
-        language: userLanguage, 
-        targetLanguage: userTargetLanguage, 
-        timestamp: Date.now() 
-    });
-    
-    return res.json({ status: "waiting" });
+// -------------------------------------------------------------
+// HEALTH CHECK & SERVER WAKE-UP
+// -------------------------------------------------------------
+app.get('/', (req, res) => {
+    res.status(200).send("Talk2Me Backend Engine Operational.");
 });
 
-// 2. CANCEL MATCHMAKING & END CALL
-app.post('/cancel-match', (req, res) => {
-    const { userId } = req.body;
-    if (userId) {
-        waitingQueue = waitingQueue.filter(user => user.userId !== userId);
-        
-        const matchInfo = activeMatches.get(userId);
-        if (matchInfo) {
-            delete roomExtensions[matchInfo.roomId];
-            activeMatches.delete(matchInfo.partnerId);
-        }
-        activeMatches.delete(userId);
-    }
-    return res.json({ status: "cancelled" });
-});
-
-// 3. CALL EXTENSION HANDSHAKE ENDPOINTS
-app.post('/call-extension/request', (req, res) => {
-    const { roomId, userId } = req.body;
-    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
-
-    // Handle race condition: if partner already requested, treat this request as an automatic acceptance!
-    if (roomExtensions[roomId] && roomExtensions[roomId].status === "requested" && roomExtensions[roomId].requester !== userId) {
-        roomExtensions[roomId].status = "accepted";
-        console.log(`[Extension] Mutual click detected for ${roomId}. Status auto-set to accepted.`);
-        return res.json({ status: "accepted" });
-    }
-
-    roomExtensions[roomId] = {
-        requester: userId,
-        status: "requested"
-    };
-
-    console.log(`[Extension] User ${userId} requested an extension for room ${roomId}`);
-    return res.json({ status: "requested" });
-});
-
-app.post('/call-extension/accept', (req, res) => {
-    const { roomId, userId } = req.body;
-    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
-
-    if (roomExtensions[roomId]) {
-        roomExtensions[roomId].status = "accepted";
-    } else {
-        roomExtensions[roomId] = { requester: userId, status: "accepted" };
-    }
-
-    console.log(`[Extension] Extension accepted for room ${roomId} by ${userId}`);
-    return res.json({ status: "accepted" });
-});
-
-app.post('/call-extension/decline', (req, res) => {
-    const { roomId, userId } = req.body;
-    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
-
-    if (roomExtensions[roomId]) {
-        roomExtensions[roomId].status = "declined";
-    } else {
-        roomExtensions[roomId] = { requester: userId, status: "declined" };
-    }
-
-    console.log(`[Extension] Extension declined for room ${roomId} by ${userId}`);
-    return res.json({ status: "declined" });
-});
-
-app.get('/call-extension/status', (req, res) => {
-    const { roomId, userId } = req.query;
-    if (!roomId || !userId) return res.status(400).json({ error: "Missing roomId or userId" });
-
-    const extensionInfo = roomExtensions[roomId];
-    if (!extensionInfo) {
-        return res.json({ status: "none" });
-    }
-
-    // If accepted, notify both clients so their timers reset together
-    if (extensionInfo.status === "accepted") {
-        return res.json({ status: "accepted" });
-    }
-
-    // If declined, notify partner that extension was rejected
-    if (extensionInfo.status === "declined") {
-        return res.json({ status: "declined" });
-    }
-
-    // If requested, trigger the extension popup only for the peer who didn't request it
-    if (extensionInfo.status === "requested" && extensionInfo.requester !== userId) {
-        return res.json({ status: "requested" });
-    }
-
-    return res.json({ status: "none" });
-});
-
-// 4. REAL-TIME AUTO-DELETE CHAT (Socket.io)
+// -------------------------------------------------------------
+// SOCKET.IO REAL-TIME MATCHMAKING & EXTENSIONS
+// -------------------------------------------------------------
 io.on('connection', (socket) => {
-    socket.on('join_room', (roomId) => socket.join(roomId));
-    socket.on('send_message', (data) => {
-        const { roomId, senderId, message } = data;
-        socket.to(roomId).emit('receive_message', { senderId, message });
+    console.log(`[Connected] Client connected: ${socket.id}`);
+
+    // --- 1. FIND MATCH ---
+    socket.on('find_match', (data) => {
+        const { userId, gender, targetGender, language, targetLanguage } = data;
+        if (!userId) return socket.emit('match_error', { message: "userId required" });
+
+        // Clean user from queue if already waiting
+        waitingQueue = waitingQueue.filter(u => u.socketId !== socket.id && u.userId !== userId);
+
+        const userGender = (gender || "any").toLowerCase();
+        const userTargetGender = (targetGender || "any").toLowerCase();
+        const userLanguage = (language || "any").toLowerCase();
+        const userTargetLanguage = (targetLanguage || "any").toLowerCase();
+
+        let matchIndex = -1;
+
+        for (let i = 0; i < waitingQueue.length; i++) {
+            const candidate = waitingQueue[i];
+
+            // Gender compatibility check
+            const genderWantsThem = (userTargetGender === "any" || userTargetGender === candidate.gender);
+            const theyWantGender = (candidate.targetGender === "any" || candidate.targetGender === userGender);
+            const isGenderCompatible = genderWantsThem && theyWantGender;
+
+            // Language compatibility check
+            let isLanguageCompatible = false;
+            if (userTargetLanguage === "any" && candidate.targetLanguage === "any") {
+                isLanguageCompatible = true;
+            } else if (userTargetLanguage === "any") {
+                isLanguageCompatible = (candidate.targetLanguage === userLanguage || candidate.language === "any");
+            } else if (candidate.targetLanguage === "any") {
+                isLanguageCompatible = (userTargetLanguage === candidate.language || userLanguage === "any");
+            } else {
+                isLanguageCompatible = (userTargetLanguage === candidate.language && candidate.targetLanguage === userLanguage);
+            }
+
+            if (isGenderCompatible && isLanguageCompatible) {
+                matchIndex = i;
+                break;
+            }
+        }
+
+        if (matchIndex !== -1) {
+            const partner = waitingQueue.splice(matchIndex, 1)[0];
+            const roomId = `Room_${Math.floor(100000 + Math.random() * 900000)}`;
+
+            socket.join(roomId);
+            const partnerSocket = io.sockets.sockets.get(partner.socketId);
+            if (partnerSocket) partnerSocket.join(roomId);
+
+            activeMatches.set(socket.id, { roomId, partnerSocketId: partner.socketId, userId, partnerUserId: partner.userId });
+            activeMatches.set(partner.socketId, { roomId, partnerSocketId: socket.id, userId: partner.userId, partnerUserId: userId });
+
+            roomExtensions.set(roomId, { requesterId: null, status: "none" });
+
+            // Notify both users instantly
+            io.to(roomId).emit('match_found', { roomId });
+            console.log(`[Matched] Paired ${userId} and ${partner.userId} in ${roomId}`);
+        } else {
+            waitingQueue.push({
+                socketId: socket.id,
+                userId,
+                gender: userGender,
+                targetGender: userTargetGender,
+                language: userLanguage,
+                targetLanguage: userTargetLanguage,
+                timestamp: Date.now()
+            });
+            socket.emit('match_waiting');
+        }
+    });
+
+    // --- 2. CANCEL MATCHMAKING / LEAVE CALL ---
+    socket.on('cancel_match', () => {
+        handleUserDisconnect(socket);
+    });
+
+    // --- 3. CALL EXTENSION HANDSHAKE ---
+    socket.on('request_extension', (data) => {
+        const { roomId, userId } = data;
+        const ext = roomExtensions.get(roomId);
+
+        if (!ext) return;
+
+        // Mutual click protection: auto-accept if partner already requested
+        if (ext.status === "requested" && ext.requesterId !== userId) {
+            ext.status = "accepted";
+            io.to(roomId).emit('extension_status', { status: "accepted" });
+            
+            // Clean state after broadcast to prevent infinite coin deductions
+            setTimeout(() => roomExtensions.set(roomId, { requesterId: null, status: "none" }), 3000);
+            return;
+        }
+
+        ext.requesterId = userId;
+        ext.status = "requested";
+        socket.to(roomId).emit('extension_status', { status: "requested", requesterId: userId });
+    });
+
+    socket.on('accept_extension', (data) => {
+        const { roomId } = data;
+        roomExtensions.set(roomId, { requesterId: null, status: "accepted" });
+        io.to(roomId).emit('extension_status', { status: "accepted" });
+
+        // Reset state after triggering timers on both ends
+        setTimeout(() => roomExtensions.set(roomId, { requesterId: null, status: "none" }), 3000);
+    });
+
+    socket.on('decline_extension', (data) => {
+        const { roomId } = data;
+        roomExtensions.set(roomId, { requesterId: null, status: "declined" });
+        socket.to(roomId).emit('extension_status', { status: "declined" });
+
+        setTimeout(() => roomExtensions.set(roomId, { requesterId: null, status: "none" }), 3000);
+    });
+
+    // --- 4. DISCONNECT CLEANUP ---
+    socket.on('disconnect', () => {
+        handleUserDisconnect(socket);
     });
 });
+
+function handleUserDisconnect(socket) {
+    // Remove from queue
+    waitingQueue = waitingQueue.filter(u => u.socketId !== socket.id);
+
+    // Notify partner in active match
+    const matchInfo = activeMatches.get(socket.id);
+    if (matchInfo) {
+        socket.to(matchInfo.roomId).emit('partner_left');
+        roomExtensions.delete(matchInfo.roomId);
+        activeMatches.delete(matchInfo.partnerSocketId);
+        activeMatches.delete(socket.id);
+    }
+}
+
+// Garbage Collection Interval for Stale Queue Entries (Sweeps every 30s)
+setInterval(() => {
+    const now = Date.now();
+    waitingQueue = waitingQueue.filter(user => (now - user.timestamp) < 45000);
+}, 30000);
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`[Talk2Me Engine] Server running on port ${PORT}`));
