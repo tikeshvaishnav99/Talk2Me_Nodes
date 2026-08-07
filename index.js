@@ -12,21 +12,26 @@ let roomExtensions = new Map();
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Backend Operational"));
 
-// 1. MATCHMAKING
+// Helper: Sanitize inputs safely
+const cleanStr = (str) => (str || "any").toString().trim().toLowerCase();
+
+// 1. MATCHMAKING ENDPOINT
 app.post('/find-match', (req, res) => {
     const { userId, gender, targetGender, language, targetLanguage } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
+    // Return active room if user is already matched
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
         return res.json({ status: "matched", roomId: matchInfo.roomId });
     }
 
-    const userGender = (gender || "any").toLowerCase();
-    const userTargetGender = (targetGender || "any").toLowerCase();
-    const userLanguage = (language || "any").toLowerCase();
-    const userTargetLanguage = (targetLanguage || "any").toLowerCase();
+    const uGender = cleanStr(gender);
+    const uTargetGender = cleanStr(targetGender);
+    const uLang = cleanStr(language);
+    const uTargetLang = cleanStr(targetLanguage);
 
+    // Remove stale queue entry for this user
     waitingQueue = waitingQueue.filter(u => u.userId !== userId);
 
     let matchIndex = -1;
@@ -34,11 +39,18 @@ app.post('/find-match', (req, res) => {
         const q = waitingQueue[i];
         if (q.userId === userId) continue;
 
-        const genderWantsThem = (userTargetGender === "any" || userTargetGender === q.gender);
-        const theyWantGender = (q.targetGender === "any" || q.targetGender === userGender);
-        let isLanguageCompatible = (userTargetLanguage === "any" || q.targetLanguage === "any" || userTargetLanguage === q.language || q.targetLanguage === userLanguage);
+        // --- GENDER MATCHING CHECK ---
+        const genderWantsThem = (uTargetGender === "any" || uTargetGender === q.gender);
+        const theyWantGender = (q.targetGender === "any" || q.targetGender === uGender);
+        const isGenderCompatible = genderWantsThem && theyWantGender;
 
-        if (genderWantsThem && theyWantGender && isLanguageCompatible) {
+        // --- MUTUAL LANGUAGE MATCHING CHECK (STRICT & FIXED) ---
+        // User A must accept User B's native language AND User B must accept User A's native language
+        const userAAcceptsUserB = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
+        const userBAcceptsUserA = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
+        const isLanguageCompatible = userAAcceptsUserB && userBAcceptsUserA;
+
+        if (isGenderCompatible && isLanguageCompatible) {
             matchIndex = i;
             break;
         }
@@ -56,7 +68,16 @@ app.post('/find-match', (req, res) => {
         return res.json({ status: "matched", roomId });
     }
 
-    waitingQueue.push({ userId, gender: userGender, targetGender: userTargetGender, language: userLanguage, targetLanguage: userTargetLanguage, timestamp: Date.now() });
+    // Add user to queue if no mutual match is found
+    waitingQueue.push({ 
+        userId, 
+        gender: uGender, 
+        targetGender: uTargetGender, 
+        language: uLang, 
+        targetLanguage: uTargetLang, 
+        timestamp: Date.now() 
+    });
+    
     return res.json({ status: "waiting" });
 });
 
@@ -114,7 +135,7 @@ app.get('/call-extension/status', (req, res) => {
     if (currentStatus === "accepted") {
         ext.consumedBy.add(userId);
         if (ext.consumedBy.size >= 2) {
-            ext.status = "none"; // Resets state so room can be extended AGAIN later!
+            ext.status = "none"; // Reset state for subsequent extension windows
         }
     }
 
