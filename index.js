@@ -9,18 +9,59 @@ const server = http.createServer(app);
 let waitingQueue = [];
 let activeMatches = new Map(); 
 let roomExtensions = new Map(); 
+let userDatabase = new Map(); // Hardware ID -> { coins: 100, firstJoined: Date }
 
-app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Backend Operational"));
+app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
 // Helper: Sanitize inputs safely
 const cleanStr = (str) => (str || "any").toString().trim().toLowerCase();
 
+// -------------------------------------------------------------
+// 0. HARDWARE SECURITY & COIN SYNC ENDPOINTS
+// -------------------------------------------------------------
+app.get('/user-data', (req, res) => {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+
+    // Existing hardware ID -> Restore true verified coin balance
+    if (userDatabase.has(userId)) {
+        const userData = userDatabase.get(userId);
+        return res.json({ coins: userData.coins });
+    }
+
+    // Brand New Hardware ID -> Grant 100 Welcome Coins ONCE
+    const newUser = {
+        userId: userId,
+        coins: 100,
+        createdAt: Date.now()
+    };
+
+    userDatabase.set(userId, newUser);
+    return res.json({ coins: 100 });
+});
+
+app.post('/update-coins', (req, res) => {
+    const { userId, amountChange } = req.body; // e.g. -10 or +15
+    if (!userId) return res.status(400).json({ error: "userId required" });
+
+    let user = userDatabase.get(userId);
+    if (!user) {
+        user = { userId, coins: 100, createdAt: Date.now() };
+    }
+
+    user.coins = Math.max(0, user.coins + parseInt(amountChange || 0));
+    userDatabase.set(userId, user);
+
+    return res.json({ status: "success", coins: user.coins });
+});
+
+// -------------------------------------------------------------
 // 1. MATCHMAKING ENDPOINT
+// -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
     const { userId, gender, targetGender, language, targetLanguage } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
-    // Return active room if user is already matched
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
         return res.json({ status: "matched", roomId: matchInfo.roomId });
@@ -31,7 +72,6 @@ app.post('/find-match', (req, res) => {
     const uLang = cleanStr(language);
     const uTargetLang = cleanStr(targetLanguage);
 
-    // Remove stale queue entry for this user
     waitingQueue = waitingQueue.filter(u => u.userId !== userId);
 
     let matchIndex = -1;
@@ -39,13 +79,12 @@ app.post('/find-match', (req, res) => {
         const q = waitingQueue[i];
         if (q.userId === userId) continue;
 
-        // --- GENDER MATCHING CHECK ---
+        // Gender Check
         const genderWantsThem = (uTargetGender === "any" || uTargetGender === q.gender);
         const theyWantGender = (q.targetGender === "any" || q.targetGender === uGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
-        // --- MUTUAL LANGUAGE MATCHING CHECK (STRICT & FIXED) ---
-        // User A must accept User B's native language AND User B must accept User A's native language
+        // Strict Mutual Language Check
         const userAAcceptsUserB = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
         const userBAcceptsUserA = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
         const isLanguageCompatible = userAAcceptsUserB && userBAcceptsUserA;
@@ -68,7 +107,6 @@ app.post('/find-match', (req, res) => {
         return res.json({ status: "matched", roomId });
     }
 
-    // Add user to queue if no mutual match is found
     waitingQueue.push({ 
         userId, 
         gender: uGender, 
@@ -81,7 +119,9 @@ app.post('/find-match', (req, res) => {
     return res.json({ status: "waiting" });
 });
 
+// -------------------------------------------------------------
 // 2. EXTENSION HANDSHAKE WITH MULTI-EXTENSION RESET
+// -------------------------------------------------------------
 app.post('/call-extension/request', (req, res) => {
     const { roomId, userId } = req.body;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
@@ -135,7 +175,7 @@ app.get('/call-extension/status', (req, res) => {
     if (currentStatus === "accepted") {
         ext.consumedBy.add(userId);
         if (ext.consumedBy.size >= 2) {
-            ext.status = "none"; // Reset state for subsequent extension windows
+            ext.status = "none";
         }
     }
 
