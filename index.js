@@ -10,6 +10,7 @@ let waitingQueue = [];
 let activeMatches = new Map(); 
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); // Hardware ID -> { coins: 100, firstJoined: Date }
+let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status: "pending" }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -23,13 +24,11 @@ app.get('/user-data', (req, res) => {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
-    // Existing hardware ID -> Restore true verified coin balance
     if (userDatabase.has(userId)) {
         const userData = userDatabase.get(userId);
         return res.json({ coins: userData.coins });
     }
 
-    // Brand New Hardware ID -> Grant 100 Welcome Coins ONCE
     const newUser = {
         userId: userId,
         coins: 100,
@@ -41,7 +40,7 @@ app.get('/user-data', (req, res) => {
 });
 
 app.post('/update-coins', (req, res) => {
-    const { userId, amountChange } = req.body; // e.g. -10 or +15
+    const { userId, amountChange } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
     let user = userDatabase.get(userId);
@@ -64,7 +63,6 @@ app.post('/sync-offline-coins', (req, res) => {
         return res.status(400).json({ error: "userId and pendingCoins required" });
     }
 
-    // SECURITY CAP: Never accept more than 50 coins from an offline sync session
     const validatedCoins = Math.min(Math.max(0, parseInt(pendingCoins || 0)), 50);
 
     let user = userDatabase.get(userId);
@@ -82,6 +80,50 @@ app.post('/sync-offline-coins', (req, res) => {
         addedCoins: validatedCoins, 
         totalCoins: user.coins 
     });
+});
+
+// -------------------------------------------------------------
+// 0.2 REAL-TIME DUEL & CO-OP CHALLENGE ENDPOINTS
+// -------------------------------------------------------------
+app.post('/send-duel-invite', (req, res) => {
+    const { roomId, senderId, isCoOp } = req.body;
+    if (!roomId || !senderId) return res.status(400).json({ error: "Missing required fields" });
+
+    activeDuelInvites.set(roomId, { 
+        senderId, 
+        isCoOp: Boolean(isCoOp), 
+        status: "pending", 
+        timestamp: Date.now() 
+    });
+
+    console.log(`[Duel] Invitation sent in ${roomId} by ${senderId} (CoOp: ${isCoOp})`);
+    return res.json({ status: "sent" });
+});
+
+app.get('/check-duel-invite', (req, res) => {
+    const { roomId, userId } = req.query;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
+
+    const invite = activeDuelInvites.get(roomId);
+
+    // Don't reflect invitation back to the sender!
+    if (!invite || invite.senderId === userId || invite.status !== "pending") {
+        return res.json({ status: "none" });
+    }
+
+    return res.json({ 
+        status: "invited", 
+        senderId: invite.senderId, 
+        isCoOp: invite.isCoOp 
+    });
+});
+
+app.post('/clear-duel-invite', (req, res) => {
+    const { roomId } = req.body;
+    if (roomId && activeDuelInvites.has(roomId)) {
+        activeDuelInvites.delete(roomId);
+    }
+    return res.json({ status: "cleared" });
 });
 
 // -------------------------------------------------------------
@@ -108,12 +150,10 @@ app.post('/find-match', (req, res) => {
         const q = waitingQueue[i];
         if (q.userId === userId) continue;
 
-        // Gender Check
         const genderWantsThem = (uTargetGender === "any" || uTargetGender === q.gender);
         const theyWantGender = (q.targetGender === "any" || q.targetGender === uGender);
         const isGenderCompatible = genderWantsThem && theyWantGender;
 
-        // Strict Mutual Language Check
         const userAAcceptsUserB = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
         const userBAcceptsUserA = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
         const isLanguageCompatible = userAAcceptsUserB && userBAcceptsUserA;
@@ -218,6 +258,7 @@ app.post('/cancel-match', (req, res) => {
         const matchInfo = activeMatches.get(userId);
         if (matchInfo) {
             roomExtensions.delete(matchInfo.roomId);
+            activeDuelInvites.delete(matchInfo.roomId);
             activeMatches.delete(matchInfo.partnerUserId);
         }
         activeMatches.delete(userId);
@@ -228,6 +269,13 @@ app.post('/cancel-match', (req, res) => {
 setInterval(() => {
     const now = Date.now();
     waitingQueue = waitingQueue.filter(u => (now - u.timestamp) < 45000);
+
+    // Clean old duel invites older than 30s
+    for (let [roomId, invite] of activeDuelInvites.entries()) {
+        if (now - invite.timestamp > 30000) {
+            activeDuelInvites.delete(roomId);
+        }
+    }
 }, 30000);
 
 const PORT = process.env.PORT || 3000;
