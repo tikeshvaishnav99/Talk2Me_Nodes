@@ -56,6 +56,35 @@ app.post('/update-coins', (req, res) => {
 });
 
 // -------------------------------------------------------------
+// 0.1 SECURE OFFLINE COIN SYNC ENDPOINT
+// -------------------------------------------------------------
+app.post('/sync-offline-coins', (req, res) => {
+    const { userId, pendingCoins } = req.body;
+    if (!userId || pendingCoins === undefined) {
+        return res.status(400).json({ error: "userId and pendingCoins required" });
+    }
+
+    // SECURITY CAP: Never accept more than 50 coins from an offline sync session
+    const validatedCoins = Math.min(Math.max(0, parseInt(pendingCoins || 0)), 50);
+
+    let user = userDatabase.get(userId);
+    if (!user) {
+        user = { userId, coins: 100, createdAt: Date.now() };
+    }
+
+    user.coins += validatedCoins;
+    userDatabase.set(userId, user);
+
+    console.log(`[Offline Sync] User ${userId} credited +${validatedCoins} Coins. New Balance: ${user.coins}`);
+
+    return res.json({ 
+        status: "success", 
+        addedCoins: validatedCoins, 
+        totalCoins: user.coins 
+    });
+});
+
+// -------------------------------------------------------------
 // 1. MATCHMAKING ENDPOINT
 // -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
