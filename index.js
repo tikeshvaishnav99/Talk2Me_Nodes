@@ -7,14 +7,13 @@ app.use(express.json());
 const server = http.createServer(app);
 
 let waitingQueue = [];
-let activeMatches = new Map(); 
+let activeMatches = new Map(); // userId -> { roomId, partnerUserId, lastHeartbeat }
 let roomExtensions = new Map(); 
-let userDatabase = new Map(); // Hardware ID -> { coins: 100, firstJoined: Date }
+let userDatabase = new Map(); 
 let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status: "pending" | "accepted" }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
-// Helper: Sanitize inputs safely
 const cleanStr = (str) => (str || "any").toString().trim().toLowerCase();
 
 // -------------------------------------------------------------
@@ -29,12 +28,7 @@ app.get('/user-data', (req, res) => {
         return res.json({ coins: userData.coins });
     }
 
-    const newUser = {
-        userId: userId,
-        coins: 100,
-        createdAt: Date.now()
-    };
-
+    const newUser = { userId, coins: 100, createdAt: Date.now() };
     userDatabase.set(userId, newUser);
     return res.json({ coins: 100 });
 });
@@ -54,9 +48,6 @@ app.post('/update-coins', (req, res) => {
     return res.json({ status: "success", coins: user.coins });
 });
 
-// -------------------------------------------------------------
-// 0.1 SECURE OFFLINE COIN SYNC ENDPOINT
-// -------------------------------------------------------------
 app.post('/sync-offline-coins', (req, res) => {
     const { userId, pendingCoins } = req.body;
     if (!userId || pendingCoins === undefined) {
@@ -73,17 +64,11 @@ app.post('/sync-offline-coins', (req, res) => {
     user.coins += validatedCoins;
     userDatabase.set(userId, user);
 
-    console.log(`[Offline Sync] User ${userId} credited +${validatedCoins} Coins. New Balance: ${user.coins}`);
-
-    return res.json({ 
-        status: "success", 
-        addedCoins: validatedCoins, 
-        totalCoins: user.coins 
-    });
+    return res.json({ status: "success", addedCoins: validatedCoins, totalCoins: user.coins });
 });
 
 // -------------------------------------------------------------
-// 0.2 REAL-TIME DUEL & CO-OP CHALLENGE ENDPOINTS
+// 0.2 REAL-TIME DUEL HANDSHAKE & HEARTBEAT ENDPOINTS
 // -------------------------------------------------------------
 app.post('/send-duel-invite', (req, res) => {
     const { roomId, senderId, isCoOp } = req.body;
@@ -96,7 +81,6 @@ app.post('/send-duel-invite', (req, res) => {
         timestamp: Date.now() 
     });
 
-    console.log(`[Duel] Invitation sent in ${roomId} by ${senderId} (CoOp: ${isCoOp})`);
     return res.json({ status: "sent" });
 });
 
@@ -108,7 +92,6 @@ app.post('/accept-duel-invite', (req, res) => {
     if (invite) {
         invite.status = "accepted";
         activeDuelInvites.set(roomId, invite);
-        console.log(`[Duel] Challenge ACCEPTED in ${roomId}! Broadcasting start signal.`);
     }
 
     return res.json({ status: "accepted" });
@@ -118,10 +101,22 @@ app.get('/check-duel-invite', (req, res) => {
     const { roomId, userId } = req.query;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
 
+    // Update active heartbeat timestamp for player
+    if (activeMatches.has(userId)) {
+        let m = activeMatches.get(userId);
+        m.lastHeartbeat = Date.now();
+        activeMatches.set(userId, m);
+    }
+
     const invite = activeDuelInvites.get(roomId);
     if (!invite) return res.json({ status: "none" });
 
-    // SENDER CHECK: Did partner accept my duel request?
+    // Check if partner disconnected during an active game
+    const partnerId = activeMatches.get(userId)?.partnerUserId;
+    if (partnerId && !activeMatches.has(partnerId)) {
+        return res.json({ status: "partner_disconnected" });
+    }
+
     if (invite.senderId === userId) {
         if (invite.status === "accepted") {
             return res.json({ status: "start_game", isCoOp: invite.isCoOp });
@@ -129,13 +124,8 @@ app.get('/check-duel-invite', (req, res) => {
         return res.json({ status: "waiting_for_partner" });
     }
 
-    // RECEIVER CHECK: Did I get an incoming invitation?
     if (invite.status === "pending") {
-        return res.json({ 
-            status: "invited", 
-            senderId: invite.senderId, 
-            isCoOp: invite.isCoOp 
-        });
+        return res.json({ status: "invited", senderId: invite.senderId, isCoOp: invite.isCoOp });
     }
 
     return res.json({ status: "none" });
@@ -149,6 +139,21 @@ app.post('/clear-duel-invite', (req, res) => {
     return res.json({ status: "cleared" });
 });
 
+// Explicit Forfeit / Abandon Match Endpoint
+app.post('/forfeit-match', (req, res) => {
+    const { userId } = req.body;
+    if (userId && activeMatches.has(userId)) {
+        const matchInfo = activeMatches.get(userId);
+        if (matchInfo) {
+            roomExtensions.delete(matchInfo.roomId);
+            activeDuelInvites.delete(matchInfo.roomId);
+            activeMatches.delete(matchInfo.partnerUserId);
+        }
+        activeMatches.delete(userId);
+    }
+    return res.json({ status: "forfeited" });
+});
+
 // -------------------------------------------------------------
 // 1. MATCHMAKING ENDPOINT
 // -------------------------------------------------------------
@@ -158,7 +163,7 @@ app.post('/find-match', (req, res) => {
 
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
-        return res.json({ status: "matched", roomId: matchInfo.roomId });
+        return res.json({ status: "matched", roomId: matchInfo.roomId, partnerUserId: matchInfo.partnerUserId });
     }
 
     const uGender = cleanStr(gender);
@@ -173,13 +178,8 @@ app.post('/find-match', (req, res) => {
         const q = waitingQueue[i];
         if (q.userId === userId) continue;
 
-        const genderWantsThem = (uTargetGender === "any" || uTargetGender === q.gender);
-        const theyWantGender = (q.targetGender === "any" || q.targetGender === uGender);
-        const isGenderCompatible = genderWantsThem && theyWantGender;
-
-        const userAAcceptsUserB = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
-        const userBAcceptsUserA = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
-        const isLanguageCompatible = userAAcceptsUserB && userBAcceptsUserA;
+        const isGenderCompatible = (uTargetGender === "any" || uTargetGender === q.gender) && (q.targetGender === "any" || q.targetGender === uGender);
+        const isLanguageCompatible = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language) && (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
 
         if (isGenderCompatible && isLanguageCompatible) {
             matchIndex = i;
@@ -191,28 +191,19 @@ app.post('/find-match', (req, res) => {
         const partner = waitingQueue.splice(matchIndex, 1)[0];
         const roomId = `Room_${Math.floor(100000 + Math.random() * 900000)}`;
 
-        activeMatches.set(userId, { roomId, partnerUserId: partner.userId });
-        activeMatches.set(partner.userId, { roomId, partnerUserId: userId });
-
+        activeMatches.set(userId, { roomId, partnerUserId: partner.userId, lastHeartbeat: Date.now() });
+        activeMatches.set(partner.userId, { roomId, partnerUserId: userId, lastHeartbeat: Date.now() });
         roomExtensions.set(roomId, { requesterId: null, status: "none", consumedBy: new Set() });
 
-        return res.json({ status: "matched", roomId });
+        return res.json({ status: "matched", roomId, partnerUserId: partner.userId });
     }
 
-    waitingQueue.push({ 
-        userId, 
-        gender: uGender, 
-        targetGender: uTargetGender, 
-        language: uLang, 
-        targetLanguage: uTargetLang, 
-        timestamp: Date.now() 
-    });
-    
+    waitingQueue.push({ userId, gender: uGender, targetGender: uTargetGender, language: uLang, targetLanguage: uTargetLang, timestamp: Date.now() });
     return res.json({ status: "waiting" });
 });
 
 // -------------------------------------------------------------
-// 2. EXTENSION HANDSHAKE WITH MULTI-EXTENSION RESET
+// 2. EXTENSION HANDSHAKE & CALL MANAGEMENT
 // -------------------------------------------------------------
 app.post('/call-extension/request', (req, res) => {
     const { roomId, userId } = req.body;
@@ -240,37 +231,27 @@ app.post('/call-extension/request', (req, res) => {
 app.post('/call-extension/accept', (req, res) => {
     const { roomId } = req.body;
     let ext = roomExtensions.get(roomId);
-    if (ext) {
-        ext.status = "accepted";
-        ext.consumedBy = new Set();
-    }
+    if (ext) { ext.status = "accepted"; ext.consumedBy = new Set(); }
     return res.json({ status: "accepted" });
 });
 
 app.post('/call-extension/decline', (req, res) => {
     const { roomId } = req.body;
     let ext = roomExtensions.get(roomId);
-    if (ext) {
-        ext.status = "declined";
-    }
+    if (ext) { ext.status = "declined"; }
     return res.json({ status: "declined" });
 });
 
 app.get('/call-extension/status', (req, res) => {
     const { roomId, userId } = req.query;
     const ext = roomExtensions.get(roomId);
-
     if (!ext) return res.json({ status: "none" });
 
     const currentStatus = ext.status;
-
     if (currentStatus === "accepted") {
         ext.consumedBy.add(userId);
-        if (ext.consumedBy.size >= 2) {
-            ext.status = "none";
-        }
+        if (ext.consumedBy.size >= 2) { ext.status = "none"; }
     }
-
     return res.json({ status: currentStatus });
 });
 
@@ -289,16 +270,18 @@ app.post('/cancel-match', (req, res) => {
     return res.json({ status: "cancelled" });
 });
 
+// Heartbeat cleanup loop: disconnects inactive players after 6s of no polling
 setInterval(() => {
     const now = Date.now();
     waitingQueue = waitingQueue.filter(u => (now - u.timestamp) < 45000);
 
-    for (let [roomId, invite] of activeDuelInvites.entries()) {
-        if (now - invite.timestamp > 30000) {
-            activeDuelInvites.delete(roomId);
+    for (let [userId, matchInfo] of activeMatches.entries()) {
+        if (now - matchInfo.lastHeartbeat > 6000) {
+            console.log(`[Timeout] Player ${userId} lost connection.`);
+            activeMatches.delete(userId);
         }
     }
-}, 30000);
+}, 3000);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`[Talk2Me Engine] Server running on port ${PORT}`));
