@@ -10,7 +10,7 @@ let waitingQueue = [];
 let activeMatches = new Map(); 
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); // Hardware ID -> { coins: 100, firstJoined: Date }
-let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status: "pending" }
+let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status: "pending" | "accepted" }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -100,22 +100,45 @@ app.post('/send-duel-invite', (req, res) => {
     return res.json({ status: "sent" });
 });
 
+app.post('/accept-duel-invite', (req, res) => {
+    const { roomId } = req.body;
+    if (!roomId) return res.status(400).json({ error: "Missing roomId" });
+
+    let invite = activeDuelInvites.get(roomId);
+    if (invite) {
+        invite.status = "accepted";
+        activeDuelInvites.set(roomId, invite);
+        console.log(`[Duel] Challenge ACCEPTED in ${roomId}! Broadcasting start signal.`);
+    }
+
+    return res.json({ status: "accepted" });
+});
+
 app.get('/check-duel-invite', (req, res) => {
     const { roomId, userId } = req.query;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
 
     const invite = activeDuelInvites.get(roomId);
+    if (!invite) return res.json({ status: "none" });
 
-    // Don't reflect invitation back to the sender!
-    if (!invite || invite.senderId === userId || invite.status !== "pending") {
-        return res.json({ status: "none" });
+    // SENDER CHECK: Did partner accept my duel request?
+    if (invite.senderId === userId) {
+        if (invite.status === "accepted") {
+            return res.json({ status: "start_game", isCoOp: invite.isCoOp });
+        }
+        return res.json({ status: "waiting_for_partner" });
     }
 
-    return res.json({ 
-        status: "invited", 
-        senderId: invite.senderId, 
-        isCoOp: invite.isCoOp 
-    });
+    // RECEIVER CHECK: Did I get an incoming invitation?
+    if (invite.status === "pending") {
+        return res.json({ 
+            status: "invited", 
+            senderId: invite.senderId, 
+            isCoOp: invite.isCoOp 
+        });
+    }
+
+    return res.json({ status: "none" });
 });
 
 app.post('/clear-duel-invite', (req, res) => {
@@ -270,7 +293,6 @@ setInterval(() => {
     const now = Date.now();
     waitingQueue = waitingQueue.filter(u => (now - u.timestamp) < 45000);
 
-    // Clean old duel invites older than 30s
     for (let [roomId, invite] of activeDuelInvites.entries()) {
         if (now - invite.timestamp > 30000) {
             activeDuelInvites.delete(roomId);
