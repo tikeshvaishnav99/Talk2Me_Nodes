@@ -7,10 +7,10 @@ app.use(express.json());
 const server = http.createServer(app);
 
 let waitingQueue = [];
-let activeMatches = new Map(); // userId -> { roomId, partnerUserId, lastHeartbeat }
+let activeMatches = new Map(); 
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); 
-let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status: "pending" | "accepted" | "forfeited", forfeitedBy: string }
+let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status, forfeitedBy }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -99,8 +99,8 @@ app.post('/accept-duel-invite', (req, res) => {
 });
 
 app.post('/forfeit-duel-invite', (req, res) => {
-    const { roomId, userId } = req.body;
-    if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
+    const { roomId, senderId } = req.body;
+    if (!roomId || !senderId) return res.status(400).json({ error: "Missing fields" });
 
     let invite = activeDuelInvites.get(roomId);
     if (!invite) {
@@ -108,10 +108,10 @@ app.post('/forfeit-duel-invite', (req, res) => {
     }
 
     invite.status = "forfeited";
-    invite.forfeitedBy = userId;
+    invite.forfeitedBy = senderId;
     activeDuelInvites.set(roomId, invite);
 
-    console.log(`[Duel Forfeit] User ${userId} forfeited match in ${roomId}`);
+    console.log(`[Duel Forfeit] User ${senderId} forfeited match in ${roomId}`);
     return res.json({ status: "forfeited" });
 });
 
@@ -127,7 +127,6 @@ app.get('/check-duel-invite', (req, res) => {
 
     const invite = activeDuelInvites.get(roomId);
 
-    // If active match was removed on server (call ended or partner left)
     const partnerId = activeMatches.get(userId)?.partnerUserId;
     if (partnerId && !activeMatches.has(partnerId)) {
         return res.json({ status: "call_ended" });
@@ -135,7 +134,7 @@ app.get('/check-duel-invite', (req, res) => {
 
     if (!invite) return res.json({ status: "none" });
 
-    // Check if partner tapped Exit/Forfeit
+    // Check if partner forfeited
     if (invite.status === "forfeited" && invite.forfeitedBy !== userId) {
         return res.json({ status: "partner_forfeited" });
     }
@@ -163,7 +162,7 @@ app.post('/clear-duel-invite', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 1. MATCHMAKING & CALL MANAGEMENT
+// 1. MATCHMAKING ENDPOINT
 // -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
     const { userId, gender, targetGender, language, targetLanguage } = req.body;
