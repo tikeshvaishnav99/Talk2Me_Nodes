@@ -10,7 +10,7 @@ let waitingQueue = [];
 let activeMatches = new Map(); // userId -> { roomId, partnerUserId, lastHeartbeat }
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); 
-let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status: "pending" | "accepted" }
+let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status: "pending" | "accepted" | "forfeited", forfeitedBy: string }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -68,7 +68,7 @@ app.post('/sync-offline-coins', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 0.2 REAL-TIME DUEL HANDSHAKE & HEARTBEAT ENDPOINTS
+// 0.2 REAL-TIME DUEL HANDSHAKE & FORFEIT BROADCAST
 // -------------------------------------------------------------
 app.post('/send-duel-invite', (req, res) => {
     const { roomId, senderId, isCoOp } = req.body;
@@ -78,6 +78,7 @@ app.post('/send-duel-invite', (req, res) => {
         senderId, 
         isCoOp: Boolean(isCoOp), 
         status: "pending", 
+        forfeitedBy: null,
         timestamp: Date.now() 
     });
 
@@ -97,11 +98,27 @@ app.post('/accept-duel-invite', (req, res) => {
     return res.json({ status: "accepted" });
 });
 
+app.post('/forfeit-duel-invite', (req, res) => {
+    const { roomId, userId } = req.body;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
+
+    let invite = activeDuelInvites.get(roomId);
+    if (!invite) {
+        invite = { senderId: "", isCoOp: false, timestamp: Date.now() };
+    }
+
+    invite.status = "forfeited";
+    invite.forfeitedBy = userId;
+    activeDuelInvites.set(roomId, invite);
+
+    console.log(`[Duel Forfeit] User ${userId} forfeited match in ${roomId}`);
+    return res.json({ status: "forfeited" });
+});
+
 app.get('/check-duel-invite', (req, res) => {
     const { roomId, userId } = req.query;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
 
-    // Update active heartbeat timestamp for player
     if (activeMatches.has(userId)) {
         let m = activeMatches.get(userId);
         m.lastHeartbeat = Date.now();
@@ -109,12 +126,18 @@ app.get('/check-duel-invite', (req, res) => {
     }
 
     const invite = activeDuelInvites.get(roomId);
-    if (!invite) return res.json({ status: "none" });
 
-    // Check if partner disconnected during an active game
+    // If active match was removed on server (call ended or partner left)
     const partnerId = activeMatches.get(userId)?.partnerUserId;
     if (partnerId && !activeMatches.has(partnerId)) {
-        return res.json({ status: "partner_disconnected" });
+        return res.json({ status: "call_ended" });
+    }
+
+    if (!invite) return res.json({ status: "none" });
+
+    // Check if partner tapped Exit/Forfeit
+    if (invite.status === "forfeited" && invite.forfeitedBy !== userId) {
+        return res.json({ status: "partner_forfeited" });
     }
 
     if (invite.senderId === userId) {
@@ -139,23 +162,8 @@ app.post('/clear-duel-invite', (req, res) => {
     return res.json({ status: "cleared" });
 });
 
-// Explicit Forfeit / Abandon Match Endpoint
-app.post('/forfeit-match', (req, res) => {
-    const { userId } = req.body;
-    if (userId && activeMatches.has(userId)) {
-        const matchInfo = activeMatches.get(userId);
-        if (matchInfo) {
-            roomExtensions.delete(matchInfo.roomId);
-            activeDuelInvites.delete(matchInfo.roomId);
-            activeMatches.delete(matchInfo.partnerUserId);
-        }
-        activeMatches.delete(userId);
-    }
-    return res.json({ status: "forfeited" });
-});
-
 // -------------------------------------------------------------
-// 1. MATCHMAKING ENDPOINT
+// 1. MATCHMAKING & CALL MANAGEMENT
 // -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
     const { userId, gender, targetGender, language, targetLanguage } = req.body;
@@ -202,9 +210,6 @@ app.post('/find-match', (req, res) => {
     return res.json({ status: "waiting" });
 });
 
-// -------------------------------------------------------------
-// 2. EXTENSION HANDSHAKE & CALL MANAGEMENT
-// -------------------------------------------------------------
 app.post('/call-extension/request', (req, res) => {
     const { roomId, userId } = req.body;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing fields" });
@@ -270,7 +275,6 @@ app.post('/cancel-match', (req, res) => {
     return res.json({ status: "cancelled" });
 });
 
-// Heartbeat cleanup loop: disconnects inactive players after 6s of no polling
 setInterval(() => {
     const now = Date.now();
     waitingQueue = waitingQueue.filter(u => (now - u.timestamp) < 45000);
