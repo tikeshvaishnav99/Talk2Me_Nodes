@@ -160,10 +160,9 @@ app.post('/clear-duel-invite', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 1. MATCHMAKING ENDPOINT WITH USERNAME, GENDER & LANGUAGE SYNC
+// 1. MATCHMAKING ENDPOINT WITH STRICT 2-WAY HANDSHAKE FIX
 // -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
-    // Read displayName from incoming request
     const { userId, displayName, gender, targetGender, language, targetLanguage } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
@@ -181,21 +180,33 @@ app.post('/find-match', (req, res) => {
         });
     }
 
-    const uGender = cleanStr(gender);
-    const uTargetGender = cleanStr(targetGender);
-    const uLang = cleanStr(language);
-    const uTargetLang = cleanStr(targetLanguage);
+    const uGender = cleanStr(gender);           // Player A Native Gender
+    const uTargetGender = cleanStr(targetGender); // Player A Target Gender
+    const uLang = cleanStr(language);           // Player A Native Language
+    const uTargetLang = cleanStr(targetLanguage); // Player A Target Language
 
     waitingQueue = waitingQueue.filter(u => u.userId !== userId);
 
     let matchIndex = -1;
     for (let i = 0; i < waitingQueue.length; i++) {
-        const q = waitingQueue[i];
+        const q = waitingQueue[i]; // Player B in queue
         if (q.userId === userId) continue;
 
-        const isGenderCompatible = (uTargetGender === "any" || uTargetGender === q.gender) && (q.targetGender === "any" || q.targetGender === uGender);
-        const isLanguageCompatible = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language) && (q.targetLanguage === "any" || q.targetLanguage === "any language" || uLang);
+        // --- STRICT TWO-WAY GENDER CHECK ---
+        const myGenderSatisfied = (uTargetGender === "any" || uTargetGender === q.gender);
+        const partnerGenderSatisfied = (q.targetGender === "any" || q.targetGender === uGender);
+        const isGenderCompatible = myGenderSatisfied && partnerGenderSatisfied;
 
+        // --- STRICT TWO-WAY LANGUAGE CHECK (FIXED) ---
+        // Player A wants Player B's native language
+        const myLangSatisfied = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
+        
+        // Player B wants Player A's native language
+        const partnerLangSatisfied = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
+
+        const isLanguageCompatible = myLangSatisfied && partnerLangSatisfied;
+
+        // Both players MUST satisfy each other's criteria
         if (isGenderCompatible && isLanguageCompatible) {
             matchIndex = i;
             break;
@@ -209,7 +220,7 @@ app.post('/find-match', (req, res) => {
         activeMatches.set(userId, { 
             roomId, 
             partnerUserId: partner.userId, 
-            partnerName: partner.displayName, // Store partner's display name
+            partnerName: partner.displayName,
             partnerGender: partner.gender,
             partnerLanguage: partner.language,
             lastHeartbeat: Date.now() 
@@ -218,7 +229,7 @@ app.post('/find-match', (req, res) => {
         activeMatches.set(partner.userId, { 
             roomId, 
             partnerUserId: userId, 
-            partnerName: myName, // Send your display name to partner
+            partnerName: myName,
             partnerGender: uGender,
             partnerLanguage: uLang,
             lastHeartbeat: Date.now() 
@@ -245,6 +256,7 @@ app.post('/find-match', (req, res) => {
         targetLanguage: uTargetLang, 
         timestamp: Date.now() 
     });
+
     return res.json({ status: "waiting" });
 });
 
