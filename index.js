@@ -111,7 +111,6 @@ app.post('/forfeit-duel-invite', (req, res) => {
     invite.forfeitedBy = senderId;
     activeDuelInvites.set(roomId, invite);
 
-    console.log(`[Duel Forfeit] User ${senderId} forfeited match in ${roomId}`);
     return res.json({ status: "forfeited" });
 });
 
@@ -161,11 +160,14 @@ app.post('/clear-duel-invite', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 1. MATCHMAKING ENDPOINT WITH GENDER & LANGUAGE SYNC
+// 1. MATCHMAKING ENDPOINT WITH USERNAME, GENDER & LANGUAGE SYNC
 // -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
-    const { userId, gender, targetGender, language, targetLanguage } = req.body;
+    // Read displayName from incoming request
+    const { userId, displayName, gender, targetGender, language, targetLanguage } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
+
+    const myName = (displayName || userId).toString().trim();
 
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
@@ -173,6 +175,7 @@ app.post('/find-match', (req, res) => {
             status: "matched", 
             roomId: matchInfo.roomId, 
             partnerUserId: matchInfo.partnerUserId,
+            partnerName: matchInfo.partnerName,
             partnerGender: matchInfo.partnerGender,
             partnerLanguage: matchInfo.partnerLanguage
         });
@@ -206,6 +209,7 @@ app.post('/find-match', (req, res) => {
         activeMatches.set(userId, { 
             roomId, 
             partnerUserId: partner.userId, 
+            partnerName: partner.displayName, // Store partner's display name
             partnerGender: partner.gender,
             partnerLanguage: partner.language,
             lastHeartbeat: Date.now() 
@@ -214,6 +218,7 @@ app.post('/find-match', (req, res) => {
         activeMatches.set(partner.userId, { 
             roomId, 
             partnerUserId: userId, 
+            partnerName: myName, // Send your display name to partner
             partnerGender: uGender,
             partnerLanguage: uLang,
             lastHeartbeat: Date.now() 
@@ -225,12 +230,21 @@ app.post('/find-match', (req, res) => {
             status: "matched", 
             roomId, 
             partnerUserId: partner.userId,
+            partnerName: partner.displayName,
             partnerGender: partner.gender,
             partnerLanguage: partner.language
         });
     }
 
-    waitingQueue.push({ userId, gender: uGender, targetGender: uTargetGender, language: uLang, targetLanguage: uTargetLang, timestamp: Date.now() });
+    waitingQueue.push({ 
+        userId, 
+        displayName: myName, 
+        gender: uGender, 
+        targetGender: uTargetGender, 
+        language: uLang, 
+        targetLanguage: uTargetLang, 
+        timestamp: Date.now() 
+    });
     return res.json({ status: "waiting" });
 });
 
@@ -305,7 +319,6 @@ setInterval(() => {
 
     for (let [userId, matchInfo] of activeMatches.entries()) {
         if (now - matchInfo.lastHeartbeat > 6000) {
-            console.log(`[Timeout] Player ${userId} lost connection.`);
             activeMatches.delete(userId);
         }
     }
