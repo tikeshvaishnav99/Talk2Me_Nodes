@@ -126,7 +126,15 @@ app.get('/check-duel-invite', (req, res) => {
 
     const invite = activeDuelInvites.get(roomId);
 
-    const partnerId = activeMatches.get(userId)?.partnerUserId;
+    // --- CHECK IF PARTNER DISCONNECTED OR TIMER EXPIRED ---
+    const myMatch = activeMatches.get(userId);
+    if (myMatch && myMatch.endReason) {
+        const reason = myMatch.endReason;
+        activeMatches.delete(userId);
+        return res.json({ status: reason }); // Sends "time_expired" or "call_ended"
+    }
+
+    const partnerId = myMatch?.partnerUserId;
     if (partnerId && !activeMatches.has(partnerId)) {
         return res.json({ status: "call_ended" });
     }
@@ -197,16 +205,12 @@ app.post('/find-match', (req, res) => {
         const partnerGenderSatisfied = (q.targetGender === "any" || q.targetGender === uGender);
         const isGenderCompatible = myGenderSatisfied && partnerGenderSatisfied;
 
-        // --- STRICT TWO-WAY LANGUAGE CHECK (FIXED) ---
-        // Player A wants Player B's native language
+        // --- STRICT TWO-WAY LANGUAGE CHECK ---
         const myLangSatisfied = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
-        
-        // Player B wants Player A's native language
         const partnerLangSatisfied = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
 
         const isLanguageCompatible = myLangSatisfied && partnerLangSatisfied;
 
-        // Both players MUST satisfy each other's criteria
         if (isGenderCompatible && isLanguageCompatible) {
             matchIndex = i;
             break;
@@ -310,15 +314,22 @@ app.get('/call-extension/status', (req, res) => {
     return res.json({ status: currentStatus });
 });
 
+// --- UPDATED CANCEL MATCH WITH TIME EXPIRED REASON SUPPORT ---
 app.post('/cancel-match', (req, res) => {
-    const { userId } = req.body;
+    const { userId, reason } = req.body;
     if (userId) {
         waitingQueue = waitingQueue.filter(u => u.userId !== userId);
         const matchInfo = activeMatches.get(userId);
         if (matchInfo) {
             roomExtensions.delete(matchInfo.roomId);
             activeDuelInvites.delete(matchInfo.roomId);
-            activeMatches.delete(matchInfo.partnerUserId);
+            
+            // Mark the partner's match info so they know WHY the call ended!
+            const partnerMatch = activeMatches.get(matchInfo.partnerUserId);
+            if (partnerMatch) {
+                partnerMatch.endReason = (reason === "time_expired") ? "time_expired" : "call_ended";
+                activeMatches.set(matchInfo.partnerUserId, partnerMatch);
+            }
         }
         activeMatches.delete(userId);
     }
