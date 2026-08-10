@@ -134,7 +134,6 @@ app.get('/check-duel-invite', (req, res) => {
 
     if (!invite) return res.json({ status: "none" });
 
-    // Check if partner forfeited
     if (invite.status === "forfeited" && invite.forfeitedBy !== userId) {
         return res.json({ status: "partner_forfeited" });
     }
@@ -162,7 +161,7 @@ app.post('/clear-duel-invite', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 1. MATCHMAKING ENDPOINT
+// 1. MATCHMAKING ENDPOINT WITH GENDER & LANGUAGE SYNC
 // -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
     const { userId, gender, targetGender, language, targetLanguage } = req.body;
@@ -170,7 +169,13 @@ app.post('/find-match', (req, res) => {
 
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
-        return res.json({ status: "matched", roomId: matchInfo.roomId, partnerUserId: matchInfo.partnerUserId });
+        return res.json({ 
+            status: "matched", 
+            roomId: matchInfo.roomId, 
+            partnerUserId: matchInfo.partnerUserId,
+            partnerGender: matchInfo.partnerGender,
+            partnerLanguage: matchInfo.partnerLanguage
+        });
     }
 
     const uGender = cleanStr(gender);
@@ -186,7 +191,7 @@ app.post('/find-match', (req, res) => {
         if (q.userId === userId) continue;
 
         const isGenderCompatible = (uTargetGender === "any" || uTargetGender === q.gender) && (q.targetGender === "any" || q.targetGender === uGender);
-        const isLanguageCompatible = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language) && (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
+        const isLanguageCompatible = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language) && (q.targetLanguage === "any" || q.targetLanguage === "any language" || uLang);
 
         if (isGenderCompatible && isLanguageCompatible) {
             matchIndex = i;
@@ -198,11 +203,31 @@ app.post('/find-match', (req, res) => {
         const partner = waitingQueue.splice(matchIndex, 1)[0];
         const roomId = `Room_${Math.floor(100000 + Math.random() * 900000)}`;
 
-        activeMatches.set(userId, { roomId, partnerUserId: partner.userId, lastHeartbeat: Date.now() });
-        activeMatches.set(partner.userId, { roomId, partnerUserId: userId, lastHeartbeat: Date.now() });
+        activeMatches.set(userId, { 
+            roomId, 
+            partnerUserId: partner.userId, 
+            partnerGender: partner.gender,
+            partnerLanguage: partner.language,
+            lastHeartbeat: Date.now() 
+        });
+
+        activeMatches.set(partner.userId, { 
+            roomId, 
+            partnerUserId: userId, 
+            partnerGender: uGender,
+            partnerLanguage: uLang,
+            lastHeartbeat: Date.now() 
+        });
+
         roomExtensions.set(roomId, { requesterId: null, status: "none", consumedBy: new Set() });
 
-        return res.json({ status: "matched", roomId, partnerUserId: partner.userId });
+        return res.json({ 
+            status: "matched", 
+            roomId, 
+            partnerUserId: partner.userId,
+            partnerGender: partner.gender,
+            partnerLanguage: partner.language
+        });
     }
 
     waitingQueue.push({ userId, gender: uGender, targetGender: uTargetGender, language: uLang, targetLanguage: uTargetLang, timestamp: Date.now() });
