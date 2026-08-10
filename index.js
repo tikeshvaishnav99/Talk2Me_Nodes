@@ -136,6 +136,12 @@ app.get('/check-duel-invite', (req, res) => {
 
     const invite = activeDuelInvites.get(roomId);
 
+    // 1. CHECK IF PARTNER SPECIFICALLY FORFEITED THE DUEL FIRST!
+    if (invite && invite.status === "forfeited" && invite.forfeitedBy !== userId) {
+        return res.json({ status: "partner_forfeited" });
+    }
+
+    // 2. CHECK IF CALL ENDED NATURALLY
     const myMatch = activeMatches.get(userId);
     if (myMatch && myMatch.endReason) {
         const reason = myMatch.endReason;
@@ -149,10 +155,6 @@ app.get('/check-duel-invite', (req, res) => {
     }
 
     if (!invite) return res.json({ status: "none" });
-
-    if (invite.status === "forfeited" && invite.forfeitedBy !== userId) {
-        return res.json({ status: "partner_forfeited" });
-    }
 
     if (invite.senderId === userId) {
         if (invite.status === "accepted") {
