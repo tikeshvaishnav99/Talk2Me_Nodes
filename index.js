@@ -16,6 +16,16 @@ app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Oper
 
 const cleanStr = (str) => (str || "any").toString().trim().toLowerCase();
 
+// Helper function to validate and return clean display names
+const getCleanDisplayName = (rawName) => {
+    if (!rawName) return "Partner";
+    const str = rawName.toString().trim();
+    if (str.length === 0 || str.startsWith("phone_") || str.startsWith("pc_")) {
+        return "Partner";
+    }
+    return str;
+};
+
 // -------------------------------------------------------------
 // 0. HARDWARE SECURITY & COIN SYNC ENDPOINTS
 // -------------------------------------------------------------
@@ -126,12 +136,11 @@ app.get('/check-duel-invite', (req, res) => {
 
     const invite = activeDuelInvites.get(roomId);
 
-    // --- CHECK IF PARTNER DISCONNECTED OR TIMER EXPIRED ---
     const myMatch = activeMatches.get(userId);
     if (myMatch && myMatch.endReason) {
         const reason = myMatch.endReason;
         activeMatches.delete(userId);
-        return res.json({ status: reason }); // Sends "time_expired" or "call_ended"
+        return res.json({ status: reason });
     }
 
     const partnerId = myMatch?.partnerUserId;
@@ -168,13 +177,13 @@ app.post('/clear-duel-invite', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 1. MATCHMAKING ENDPOINT WITH STRICT 2-WAY HANDSHAKE FIX
+// 1. MATCHMAKING ENDPOINT WITH CLEAN NAME & 2-WAY HANDSHAKE
 // -------------------------------------------------------------
 app.post('/find-match', (req, res) => {
     const { userId, displayName, gender, targetGender, language, targetLanguage } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
 
-    const myName = (displayName || userId).toString().trim();
+    const myName = getCleanDisplayName(displayName);
 
     if (activeMatches.has(userId)) {
         const matchInfo = activeMatches.get(userId);
@@ -188,27 +197,26 @@ app.post('/find-match', (req, res) => {
         });
     }
 
-    const uGender = cleanStr(gender);           // Player A Native Gender
-    const uTargetGender = cleanStr(targetGender); // Player A Target Gender
-    const uLang = cleanStr(language);           // Player A Native Language
-    const uTargetLang = cleanStr(targetLanguage); // Player A Target Language
+    const uGender = cleanStr(gender);
+    const uTargetGender = cleanStr(targetGender);
+    const uLang = cleanStr(language);
+    const uTargetLang = cleanStr(targetLanguage);
 
     waitingQueue = waitingQueue.filter(u => u.userId !== userId);
 
     let matchIndex = -1;
     for (let i = 0; i < waitingQueue.length; i++) {
-        const q = waitingQueue[i]; // Player B in queue
+        const q = waitingQueue[i];
         if (q.userId === userId) continue;
 
-        // --- STRICT TWO-WAY GENDER CHECK ---
+        // Strict 2-way Gender check
         const myGenderSatisfied = (uTargetGender === "any" || uTargetGender === q.gender);
         const partnerGenderSatisfied = (q.targetGender === "any" || q.targetGender === uGender);
         const isGenderCompatible = myGenderSatisfied && partnerGenderSatisfied;
 
-        // --- STRICT TWO-WAY LANGUAGE CHECK ---
+        // Strict 2-way Language check
         const myLangSatisfied = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
         const partnerLangSatisfied = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
-
         const isLanguageCompatible = myLangSatisfied && partnerLangSatisfied;
 
         if (isGenderCompatible && isLanguageCompatible) {
@@ -221,10 +229,12 @@ app.post('/find-match', (req, res) => {
         const partner = waitingQueue.splice(matchIndex, 1)[0];
         const roomId = `Room_${Math.floor(100000 + Math.random() * 900000)}`;
 
+        const partnerCleanName = getCleanDisplayName(partner.displayName);
+
         activeMatches.set(userId, { 
             roomId, 
             partnerUserId: partner.userId, 
-            partnerName: partner.displayName,
+            partnerName: partnerCleanName,
             partnerGender: partner.gender,
             partnerLanguage: partner.language,
             lastHeartbeat: Date.now() 
@@ -245,7 +255,7 @@ app.post('/find-match', (req, res) => {
             status: "matched", 
             roomId, 
             partnerUserId: partner.userId,
-            partnerName: partner.displayName,
+            partnerName: partnerCleanName,
             partnerGender: partner.gender,
             partnerLanguage: partner.language
         });
@@ -314,7 +324,6 @@ app.get('/call-extension/status', (req, res) => {
     return res.json({ status: currentStatus });
 });
 
-// --- UPDATED CANCEL MATCH WITH TIME EXPIRED REASON SUPPORT ---
 app.post('/cancel-match', (req, res) => {
     const { userId, reason } = req.body;
     if (userId) {
@@ -324,7 +333,6 @@ app.post('/cancel-match', (req, res) => {
             roomExtensions.delete(matchInfo.roomId);
             activeDuelInvites.delete(matchInfo.roomId);
             
-            // Mark the partner's match info so they know WHY the call ended!
             const partnerMatch = activeMatches.get(matchInfo.partnerUserId);
             if (partnerMatch) {
                 partnerMatch.endReason = (reason === "time_expired") ? "time_expired" : "call_ended";
