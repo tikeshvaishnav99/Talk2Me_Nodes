@@ -11,7 +11,7 @@ let activeMatches = new Map();
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); 
 let activeDuelInvites = new Map(); // roomId -> { senderId, gameModeId, isCoOp, status, forfeitedBy, winnerId }
-let ludoGameStates = new Map();     // roomId -> { senderId, tokenIndex, newPosition, dice, timestamp }
+let ludoGameStates = new Map();     // roomId -> { senderId, tokenIndex, newPosition, dice, moveSeq, timestamp }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -126,7 +126,6 @@ app.post('/forfeit-duel-invite', (req, res) => {
     return res.json({ status: "forfeited" });
 });
 
-// Explicit endpoint for when a player legitimately wins the game
 app.post('/ludo-game-over', (req, res) => {
     const { roomId, winnerId } = req.body;
     if (!roomId || !winnerId) return res.status(400).json({ error: "Missing roomId or winnerId" });
@@ -155,7 +154,6 @@ app.get('/check-duel-invite', (req, res) => {
 
     const invite = activeDuelInvites.get(roomId);
 
-    // Check if the game finished legitimately
     if (invite && invite.status === "game_won") {
         if (invite.winnerId === userId) {
             return res.json({ status: "i_won" });
@@ -164,7 +162,6 @@ app.get('/check-duel-invite', (req, res) => {
         }
     }
 
-    // Check if partner forfeited/left
     if (invite && invite.status === "forfeited" && invite.forfeitedBy !== userId) {
         return res.json({ status: "partner_forfeited" });
     }
@@ -207,34 +204,36 @@ app.post('/clear-duel-invite', (req, res) => {
 });
 
 // -------------------------------------------------------------
-// 0.3 LUDO BLITZ (1v1) GAMEPLAY ENDPOINTS
+// 0.3 LUDO BLITZ (1v1) RELIABLE MOVE SYNC WITH SEQUENCE COUNTER
 // -------------------------------------------------------------
 app.post('/ludo-move', (req, res) => {
-    const { roomId, senderId, tokenIndex, newPosition, dice } = req.body;
+    const { roomId, senderId, tokenIndex, newPosition, dice, moveSeq } = req.body;
     if (!roomId) return res.status(400).json({ error: "roomId required" });
 
+    const prevState = ludoGameStates.get(roomId);
+    const nextSeq = moveSeq !== undefined ? parseInt(moveSeq) : ((prevState?.moveSeq || 0) + 1);
+
     ludoGameStates.set(roomId, {
-        senderId,
+        senderId: senderId || "",
         tokenIndex: parseInt(tokenIndex || 0),
         newPosition: parseInt(newPosition || 0),
         dice: parseInt(dice || 0),
+        moveSeq: nextSeq,
         timestamp: Date.now()
     });
 
-    return res.json({ status: "ok" });
+    return res.json({ status: "ok", moveSeq: nextSeq });
 });
 
 app.get('/get-ludo-move', (req, res) => {
     const { roomId, userId } = req.query;
-    if (!roomId || !userId) return res.status(400).json({ error: "Missing parameters" });
+    if (!roomId) return res.status(400).json({ error: "Missing roomId" });
 
     const move = ludoGameStates.get(roomId);
-    if (move && move.senderId !== userId) {
-        // Clear move after recipient reads it so it doesn't double-apply
-        ludoGameStates.delete(roomId);
+    if (move) {
         return res.json(move);
     }
-    return res.json({ dice: 0 });
+    return res.json({ dice: 0, moveSeq: 0 });
 });
 
 // -------------------------------------------------------------
@@ -404,7 +403,6 @@ app.post('/cancel-match', (req, res) => {
     return res.json({ status: "cancelled" });
 });
 
-// Periodic cleanup loop
 setInterval(() => {
     const now = Date.now();
     waitingQueue = waitingQueue.filter(u => (now - u.timestamp) < 45000);
