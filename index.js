@@ -10,13 +10,12 @@ let waitingQueue = [];
 let activeMatches = new Map(); 
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); 
-let activeDuelInvites = new Map(); // roomId -> { senderId, isCoOp, status, forfeitedBy }
+let activeDuelInvites = new Map(); // roomId -> { senderId, gameModeId, isCoOp, status, forfeitedBy }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
 const cleanStr = (str) => (str || "any").toString().trim().toLowerCase();
 
-// Helper function to validate and return clean display names
 const getCleanDisplayName = (rawName) => {
     if (!rawName) return "Partner";
     const str = rawName.toString().trim();
@@ -81,11 +80,12 @@ app.post('/sync-offline-coins', (req, res) => {
 // 0.2 REAL-TIME DUEL HANDSHAKE & FORFEIT BROADCAST
 // -------------------------------------------------------------
 app.post('/send-duel-invite', (req, res) => {
-    const { roomId, senderId, isCoOp } = req.body;
+    const { roomId, senderId, gameModeId, isCoOp } = req.body;
     if (!roomId || !senderId) return res.status(400).json({ error: "Missing required fields" });
 
     activeDuelInvites.set(roomId, { 
         senderId, 
+        gameModeId: parseInt(gameModeId || 0),
         isCoOp: Boolean(isCoOp), 
         status: "pending", 
         forfeitedBy: null,
@@ -114,7 +114,7 @@ app.post('/forfeit-duel-invite', (req, res) => {
 
     let invite = activeDuelInvites.get(roomId);
     if (!invite) {
-        invite = { senderId: "", isCoOp: false, timestamp: Date.now() };
+        invite = { senderId: "", gameModeId: 0, isCoOp: false, timestamp: Date.now() };
     }
 
     invite.status = "forfeited";
@@ -136,12 +136,10 @@ app.get('/check-duel-invite', (req, res) => {
 
     const invite = activeDuelInvites.get(roomId);
 
-    // 1. CHECK IF PARTNER SPECIFICALLY FORFEITED THE DUEL FIRST!
     if (invite && invite.status === "forfeited" && invite.forfeitedBy !== userId) {
         return res.json({ status: "partner_forfeited" });
     }
 
-    // 2. CHECK IF CALL ENDED NATURALLY
     const myMatch = activeMatches.get(userId);
     if (myMatch && myMatch.endReason) {
         const reason = myMatch.endReason;
@@ -158,13 +156,13 @@ app.get('/check-duel-invite', (req, res) => {
 
     if (invite.senderId === userId) {
         if (invite.status === "accepted") {
-            return res.json({ status: "start_game", isCoOp: invite.isCoOp });
+            return res.json({ status: "start_game", gameModeId: invite.gameModeId, isCoOp: invite.isCoOp });
         }
         return res.json({ status: "waiting_for_partner" });
     }
 
     if (invite.status === "pending") {
-        return res.json({ status: "invited", senderId: invite.senderId, isCoOp: invite.isCoOp });
+        return res.json({ status: "invited", senderId: invite.senderId, gameModeId: invite.gameModeId, isCoOp: invite.isCoOp });
     }
 
     return res.json({ status: "none" });
@@ -211,12 +209,10 @@ app.post('/find-match', (req, res) => {
         const q = waitingQueue[i];
         if (q.userId === userId) continue;
 
-        // Strict 2-way Gender check
         const myGenderSatisfied = (uTargetGender === "any" || uTargetGender === q.gender);
         const partnerGenderSatisfied = (q.targetGender === "any" || q.targetGender === uGender);
         const isGenderCompatible = myGenderSatisfied && partnerGenderSatisfied;
 
-        // Strict 2-way Language check
         const myLangSatisfied = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
         const partnerLangSatisfied = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
         const isLanguageCompatible = myLangSatisfied && partnerLangSatisfied;
