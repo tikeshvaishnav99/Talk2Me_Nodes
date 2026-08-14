@@ -11,6 +11,7 @@ let activeMatches = new Map();
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); 
 let activeDuelInvites = new Map(); // roomId -> { senderId, gameModeId, isCoOp, status, forfeitedBy }
+let ludoGameStates = new Map();     // roomId -> { senderId, tokenIndex, newPosition, dice, timestamp }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -170,10 +171,42 @@ app.get('/check-duel-invite', (req, res) => {
 
 app.post('/clear-duel-invite', (req, res) => {
     const { roomId } = req.body;
-    if (roomId && activeDuelInvites.has(roomId)) {
+    if (roomId) {
         activeDuelInvites.delete(roomId);
+        ludoGameStates.delete(roomId);
     }
     return res.json({ status: "cleared" });
+});
+
+// -------------------------------------------------------------
+// 0.3 LUDO BLITZ (1v1) GAMEPLAY ENDPOINTS
+// -------------------------------------------------------------
+app.post('/ludo-move', (req, res) => {
+    const { roomId, senderId, tokenIndex, newPosition, dice } = req.body;
+    if (!roomId) return res.status(400).json({ error: "roomId required" });
+
+    ludoGameStates.set(roomId, {
+        senderId,
+        tokenIndex: parseInt(tokenIndex || 0),
+        newPosition: parseInt(newPosition || 0),
+        dice: parseInt(dice || 0),
+        timestamp: Date.now()
+    });
+
+    return res.json({ status: "ok" });
+});
+
+app.get('/get-ludo-move', (req, res) => {
+    const { roomId, userId } = req.query;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing parameters" });
+
+    const move = ludoGameStates.get(roomId);
+    if (move && move.senderId !== userId) {
+        // Clear move after recipient reads it so it doesn't double-apply
+        ludoGameStates.delete(roomId);
+        return res.json(move);
+    }
+    return res.json({ dice: 0 });
 });
 
 // -------------------------------------------------------------
@@ -209,10 +242,12 @@ app.post('/find-match', (req, res) => {
         const q = waitingQueue[i];
         if (q.userId === userId) continue;
 
+        // Strict 2-way Gender check
         const myGenderSatisfied = (uTargetGender === "any" || uTargetGender === q.gender);
         const partnerGenderSatisfied = (q.targetGender === "any" || q.targetGender === uGender);
         const isGenderCompatible = myGenderSatisfied && partnerGenderSatisfied;
 
+        // Strict 2-way Language check
         const myLangSatisfied = (uTargetLang === "any" || uTargetLang === "any language" || uTargetLang === q.language);
         const partnerLangSatisfied = (q.targetLanguage === "any" || q.targetLanguage === "any language" || q.targetLanguage === uLang);
         const isLanguageCompatible = myLangSatisfied && partnerLangSatisfied;
@@ -330,6 +365,7 @@ app.post('/cancel-match', (req, res) => {
         if (matchInfo) {
             roomExtensions.delete(matchInfo.roomId);
             activeDuelInvites.delete(matchInfo.roomId);
+            ludoGameStates.delete(matchInfo.roomId);
             
             const partnerMatch = activeMatches.get(matchInfo.partnerUserId);
             if (partnerMatch) {
@@ -342,6 +378,7 @@ app.post('/cancel-match', (req, res) => {
     return res.json({ status: "cancelled" });
 });
 
+// Periodic memory cleanup
 setInterval(() => {
     const now = Date.now();
     waitingQueue = waitingQueue.filter(u => (now - u.timestamp) < 45000);
@@ -349,6 +386,13 @@ setInterval(() => {
     for (let [userId, matchInfo] of activeMatches.entries()) {
         if (now - matchInfo.lastHeartbeat > 6000) {
             activeMatches.delete(userId);
+        }
+    }
+
+    // Clean old ludo game moves older than 60 seconds
+    for (let [roomId, state] of ludoGameStates.entries()) {
+        if (now - state.timestamp > 60000) {
+            ludoGameStates.delete(roomId);
         }
     }
 }, 3000);
