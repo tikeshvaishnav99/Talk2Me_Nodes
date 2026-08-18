@@ -12,6 +12,7 @@ let roomExtensions = new Map();
 let userDatabase = new Map(); 
 let activeDuelInvites = new Map(); // roomId -> { senderId, gameModeId, isCoOp, status, forfeitedBy, winnerId }
 let ludoGameStates = new Map();     // roomId -> { senderId, tokenIndex, newPosition, dice, moveSeq, timestamp }
+let runnerGameStates = new Map();   // roomId -> { senderId, action, paramVal, zPos, timestamp }
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -199,6 +200,7 @@ app.post('/clear-duel-invite', (req, res) => {
     if (roomId) {
         activeDuelInvites.delete(roomId);
         ludoGameStates.delete(roomId);
+        runnerGameStates.delete(roomId);
     }
     return res.json({ status: "cleared" });
 });
@@ -234,6 +236,36 @@ app.get('/get-ludo-move', (req, res) => {
         return res.json(move);
     }
     return res.json({ dice: 0, moveSeq: 0 });
+});
+
+// -------------------------------------------------------------
+// 0.4 ROOF RUNNERS (1v1) ACTION BUFFER & REAL-TIME SYNC
+// -------------------------------------------------------------
+app.post('/runner-action', (req, res) => {
+    const { roomId, senderId, action, paramVal, zPos } = req.body;
+    if (!roomId || !senderId) return res.status(400).json({ error: "Missing runner metadata" });
+
+    runnerGameStates.set(roomId, {
+        senderId,
+        action: action || "",
+        paramVal: parseInt(paramVal || 0),
+        zPos: parseFloat(zPos || 0),
+        timestamp: Date.now()
+    });
+
+    return res.json({ status: "buffered" });
+});
+
+app.get('/get-runner-actions', (req, res) => {
+    const { roomId, userId } = req.query;
+    if (!roomId || !userId) return res.status(400).json({ error: "Missing request parameters" });
+
+    const move = runnerGameStates.get(roomId);
+    if (move && move.senderId !== userId) {
+        runnerGameStates.delete(roomId); // Consume action on pull
+        return res.json({ action: move.action, paramVal: move.paramVal, zPos: move.zPos });
+    }
+    return res.json({ action: "" });
 });
 
 // -------------------------------------------------------------
@@ -391,6 +423,7 @@ app.post('/cancel-match', (req, res) => {
             roomExtensions.delete(matchInfo.roomId);
             activeDuelInvites.delete(matchInfo.roomId);
             ludoGameStates.delete(matchInfo.roomId);
+            runnerGameStates.delete(matchInfo.roomId);
             
             const partnerMatch = activeMatches.get(matchInfo.partnerUserId);
             if (partnerMatch) {
@@ -416,6 +449,12 @@ setInterval(() => {
     for (let [roomId, state] of ludoGameStates.entries()) {
         if (now - state.timestamp > 60000) {
             ludoGameStates.delete(roomId);
+        }
+    }
+
+    for (let [roomId, state] of runnerGameStates.entries()) {
+        if (now - state.timestamp > 60000) {
+            runnerGameStates.delete(roomId);
         }
     }
 }, 3000);
