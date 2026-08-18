@@ -10,9 +10,9 @@ let waitingQueue = [];
 let activeMatches = new Map(); 
 let roomExtensions = new Map(); 
 let userDatabase = new Map(); 
-let activeDuelInvites = new Map(); // roomId -> { senderId, gameModeId, isCoOp, status, forfeitedBy, winnerId }
-let ludoGameStates = new Map();     // roomId -> { senderId, tokenIndex, newPosition, dice, moveSeq, timestamp }
-let runnerGameStates = new Map();   // roomId -> { senderId, action, paramVal, zPos, timestamp }
+let activeDuelInvites = new Map();
+let ludoGameStates = new Map();
+let runnerGameStates = new Map();
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -27,9 +27,7 @@ const getCleanDisplayName = (rawName) => {
     return str;
 };
 
-// -------------------------------------------------------------
 // 0. HARDWARE SECURITY & COIN SYNC ENDPOINTS
-// -------------------------------------------------------------
 app.get('/user-data', (req, res) => {
     const { userId } = req.query;
     if (!userId) return res.status(400).json({ error: "userId required" });
@@ -78,9 +76,7 @@ app.post('/sync-offline-coins', (req, res) => {
     return res.json({ status: "success", addedCoins: validatedCoins, totalCoins: user.coins });
 });
 
-// -------------------------------------------------------------
 // 0.2 REAL-TIME DUEL HANDSHAKE & FORFEIT BROADCAST
-// -------------------------------------------------------------
 app.post('/send-duel-invite', (req, res) => {
     const { roomId, senderId, gameModeId, isCoOp } = req.body;
     if (!roomId || !senderId) return res.status(400).json({ error: "Missing required fields" });
@@ -205,9 +201,7 @@ app.post('/clear-duel-invite', (req, res) => {
     return res.json({ status: "cleared" });
 });
 
-// -------------------------------------------------------------
-// 0.3 LUDO BLITZ (1v1) RELIABLE MOVE SYNC WITH SEQUENCE COUNTER
-// -------------------------------------------------------------
+// 0.3 LUDO BLITZ (1v1) MOVE SYNC
 app.post('/ludo-move', (req, res) => {
     const { roomId, senderId, tokenIndex, newPosition, dice, moveSeq } = req.body;
     if (!roomId) return res.status(400).json({ error: "roomId required" });
@@ -238,9 +232,7 @@ app.get('/get-ludo-move', (req, res) => {
     return res.json({ dice: 0, moveSeq: 0 });
 });
 
-// -------------------------------------------------------------
-// 0.4 ROOF RUNNERS (1v1) ACTION BUFFER & REAL-TIME SYNC
-// -------------------------------------------------------------
+// 0.4 ROOF RUNNERS (1v1) ACTION BUFFER
 app.post('/runner-action', (req, res) => {
     const { roomId, senderId, action, paramVal, zPos } = req.body;
     if (!roomId || !senderId) return res.status(400).json({ error: "Missing runner metadata" });
@@ -262,15 +254,13 @@ app.get('/get-runner-actions', (req, res) => {
 
     const move = runnerGameStates.get(roomId);
     if (move && move.senderId !== userId) {
-        runnerGameStates.delete(roomId); // Consume action on pull
+        runnerGameStates.delete(roomId);
         return res.json({ action: move.action, paramVal: move.paramVal, zPos: move.zPos });
     }
     return res.json({ action: "" });
 });
 
-// -------------------------------------------------------------
-// 1. MATCHMAKING ENDPOINT WITH CLEAN NAME & 2-WAY HANDSHAKE
-// -------------------------------------------------------------
+// 1. MATCHMAKING ENDPOINTS
 app.post('/find-match', (req, res) => {
     const { userId, displayName, gender, targetGender, language, targetLanguage } = req.body;
     if (!userId) return res.status(400).json({ error: "userId required" });
@@ -318,7 +308,6 @@ app.post('/find-match', (req, res) => {
     if (matchIndex !== -1) {
         const partner = waitingQueue.splice(matchIndex, 1)[0];
         const roomId = `Room_${Math.floor(100000 + Math.random() * 900000)}`;
-
         const partnerCleanName = getCleanDisplayName(partner.displayName);
 
         activeMatches.set(userId, { 
