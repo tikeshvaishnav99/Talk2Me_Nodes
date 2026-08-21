@@ -12,7 +12,7 @@ let roomExtensions = new Map();
 let userDatabase = new Map(); 
 let activeDuelInvites = new Map();
 let ludoGameStates = new Map();
-let runnerGameStates = new Map();
+let runnerGameStates = new Map(); // Updated to handle Maps inside
 
 app.get('/', (req, res) => res.status(200).send("Talk2Me Progressive Engine Operational"));
 
@@ -232,13 +232,19 @@ app.get('/get-ludo-move', (req, res) => {
     return res.json({ dice: 0, moveSeq: 0 });
 });
 
-// 0.4 ROOF RUNNERS (1v1) ACTION BUFFER
+// --------------------------------------------------------
+// 0.4 FIXED ROOF RUNNERS (1v1) ACTION & POSITION BUFFER
+// --------------------------------------------------------
 app.post('/runner-action', (req, res) => {
     const { roomId, senderId, action, paramVal, zPos } = req.body;
     if (!roomId || !senderId) return res.status(400).json({ error: "Missing runner metadata" });
 
-    runnerGameStates.set(roomId, {
-        senderId,
+    if (!runnerGameStates.has(roomId)) {
+        runnerGameStates.set(roomId, new Map());
+    }
+
+    const roomStates = runnerGameStates.get(roomId);
+    roomStates.set(senderId, {
         action: action || "",
         paramVal: parseInt(paramVal || 0),
         zPos: parseFloat(zPos || 0),
@@ -252,13 +258,31 @@ app.get('/get-runner-actions', (req, res) => {
     const { roomId, userId } = req.query;
     if (!roomId || !userId) return res.status(400).json({ error: "Missing request parameters" });
 
-    const move = runnerGameStates.get(roomId);
-    if (move && move.senderId !== userId) {
-        runnerGameStates.delete(roomId);
-        return res.json({ action: move.action, paramVal: move.paramVal, zPos: move.zPos });
+    const roomStates = runnerGameStates.get(roomId);
+    if (!roomStates) return res.json({ action: "" });
+
+    let rivalState = null;
+    
+    // Find the rival's latest state
+    for (let [senderId, state] of roomStates.entries()) {
+        if (senderId !== userId) {
+            rivalState = state;
+            state.action = ""; // Clear action so it doesn't repeat, but KEEP zPos flowing
+            break;
+        }
     }
+
+    if (rivalState) {
+        return res.json({ 
+            action: rivalState.action, 
+            paramVal: rivalState.paramVal, 
+            zPos: rivalState.zPos 
+        });
+    }
+
     return res.json({ action: "" });
 });
+// --------------------------------------------------------
 
 // 1. MATCHMAKING ENDPOINTS
 app.post('/find-match', (req, res) => {
@@ -441,10 +465,15 @@ setInterval(() => {
         }
     }
 
-    for (let [roomId, state] of runnerGameStates.entries()) {
-        if (now - state.timestamp > 60000) {
-            runnerGameStates.delete(roomId);
+    // Clean up old Runner Game States safely
+    for (let [roomId, roomStates] of runnerGameStates.entries()) {
+        let hasActive = false;
+        for (let [senderId, state] of roomStates.entries()) {
+            if (now - state.timestamp < 60000) {
+                hasActive = true;
+            }
         }
+        if (!hasActive) runnerGameStates.delete(roomId);
     }
 }, 3000);
 
